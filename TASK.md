@@ -2,9 +2,9 @@
 
 **Theme:** European Power Fair Value: Forecasting Day-Ahead and Translating to Prompt Curve Views
 
-**Full Name:** `[Insert full name]`  
-**Email Address:** `[Insert email address]`  
-**Deadline:** **Thursday, 4 June 2026** — one week from the assignment date.
+**Full Name:** `Rawad Batous`  
+**Email Address:** `rawad.batous2006@gmail.com`  
+**Deadline:** **Thursday, 2 June 2026** — one week from the assignment date.
 
 ---
 
