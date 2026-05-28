@@ -29,11 +29,20 @@ Thumbs.db
 .idea/
 
 # Generated data and outputs
-data/raw/
-data/interim/
-data/processed/
-outputs/
+data/raw/**
+data/interim/**
+data/processed/**
+outputs/**
 report/*.pdf
 
 # Keep directory placeholders if added later
 !.gitkeep
+!data/raw/
+!data/raw/entsoe/
+!data/raw/energy_charts/
+!data/raw/entsoe/.gitkeep
+!data/raw/energy_charts/.gitkeep
+!data/interim/
+!data/interim/.gitkeep
+!data/processed/
+!data/processed/.gitkeep
