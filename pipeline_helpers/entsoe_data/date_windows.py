@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from pipeline_helpers.entsoe_data.constants import ENTSOE_DATETIME_FORMAT, GERMANY_MARKET_TIMEZONE
+from pipeline_helpers.entsoe_data import constants
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,12 @@ class LocalDateWindow:
     entsoe_end: str
 
 
+def format_local_date(timestamp: pd.Timestamp) -> str:
+    """Format a timestamp as ``DD-MM-YYYY``."""
+
+    return timestamp.strftime("%d-%m-%Y")
+
+
 def parse_local_date_window(start: str, end: str) -> LocalDateWindow:
     """Parse ``DD-MM-YYYY`` start/end dates as German local midnights.
 
@@ -30,7 +36,7 @@ def parse_local_date_window(start: str, end: str) -> LocalDateWindow:
     means the German local delivery day 1 May 2026, from 00:00 to 24:00.
     """
 
-    timezone = ZoneInfo(GERMANY_MARKET_TIMEZONE)
+    timezone = ZoneInfo(constants.GERMANY_MARKET_TIMEZONE)
     try:
         start_date = datetime.strptime(start, "%d-%m-%Y")
         end_date = datetime.strptime(end, "%d-%m-%Y")
@@ -50,6 +56,27 @@ def parse_local_date_window(start: str, end: str) -> LocalDateWindow:
         end_local=end_local,
         start_utc=start_utc,
         end_utc=end_utc,
-        entsoe_start=start_utc.strftime(ENTSOE_DATETIME_FORMAT),
-        entsoe_end=end_utc.strftime(ENTSOE_DATETIME_FORMAT),
+        entsoe_start=start_utc.strftime(constants.ENTSOE_DATETIME_FORMAT),
+        entsoe_end=end_utc.strftime(constants.ENTSOE_DATETIME_FORMAT),
     )
+
+
+def split_local_date_window_into_months(start: str, end: str) -> list[LocalDateWindow]:
+    """Split a local date window into month-sized local date windows."""
+
+    full_window = parse_local_date_window(start, end)
+    chunk_start = full_window.start_local
+    chunks: list[LocalDateWindow] = []
+
+    while chunk_start < full_window.end_local:
+        next_month = chunk_start + pd.DateOffset(months=1)
+        chunk_end = min(next_month, full_window.end_local)
+        chunks.append(
+            parse_local_date_window(
+                format_local_date(chunk_start),
+                format_local_date(chunk_end),
+            )
+        )
+        chunk_start = chunk_end
+
+    return chunks

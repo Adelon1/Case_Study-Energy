@@ -26,10 +26,23 @@ def next_dataset_name(base_dir: str | Path = "data/raw") -> str:
     return f"DataSet{index}"
 
 
+def available_named_folder(preferred_name: str, base_dir: str | Path = "data/raw") -> str:
+    """Return ``preferred_name`` or add a numeric suffix if it already exists."""
+
+    base_path = Path(base_dir)
+    if not (base_path / preferred_name).exists():
+        return preferred_name
+
+    index = 1
+    while (base_path / f"{preferred_name}_{index}").exists():
+        index += 1
+    return f"{preferred_name}_{index}"
+
+
 def create_dataset_folders(dataset_name: str | None = None) -> DatasetFolders:
     """Create matching folders under ``data/raw``, ``data/interim``, and ``data/processed``."""
 
-    name = dataset_name or next_dataset_name()
+    name = available_named_folder(dataset_name) if dataset_name else next_dataset_name()
     folders = DatasetFolders(
         name=name,
         raw=Path("data/raw") / name,
@@ -40,3 +53,15 @@ def create_dataset_folders(dataset_name: str | None = None) -> DatasetFolders:
     folders.interim.mkdir(parents=True, exist_ok=False)
     folders.processed.mkdir(parents=True, exist_ok=False)
     return folders
+
+
+def create_folders_for_mode(mode: str, start: str, end: str) -> DatasetFolders:
+    """Create dataset folders using a standard name for modelling runs."""
+
+    if mode == "test":
+        return create_dataset_folders()
+    if mode == "modelling":
+        start_year = start[-4:]
+        end_year = end[-4:]
+        return create_dataset_folders(f"germany_modelling_{start_year}_{end_year}")
+    raise ValueError(f"Unsupported mode: {mode}")

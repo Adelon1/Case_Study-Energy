@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -25,12 +26,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from pipeline_helpers.entsoe_data import constants  # noqa: E402
 from pipeline_helpers.entsoe_data.combine_dataset_csvs import write_combined_dataset  # noqa: E402
-from pipeline_helpers.entsoe_data.constants import ENTSOE_BASE_URL, ENTSOE_DATASETS  # noqa: E402
-from pipeline_helpers.entsoe_data.date_windows import parse_local_date_window  # noqa: E402
-from pipeline_helpers.entsoe_data.dataset_folders import create_dataset_folders  # noqa: E402
+from pipeline_helpers.entsoe_data.build_features import write_feature_dataset  # noqa: E402
+from pipeline_helpers.entsoe_data.date_windows import (  # noqa: E402
+    parse_local_date_window,
+    split_local_date_window_into_months,
+)
+from pipeline_helpers.entsoe_data.dataset_folders import create_folders_for_mode  # noqa: E402
 from pipeline_helpers.entsoe_data.entsoe_api import save_raw_xml_response, send_entsoe_get_request  # noqa: E402
-from pipeline_helpers.entsoe_data.entsoe_xml_to_csv import write_dataset_csv  # noqa: E402
+from pipeline_helpers.entsoe_data.entsoe_xml_to_csv import write_dataset_csv_from_xml_files  # noqa: E402
 
 
 def parse_command_line_arguments() -> argparse.Namespace:
@@ -41,7 +46,7 @@ def parse_command_line_arguments() -> argparse.Namespace:
         "--datasets",
         nargs="+",
         required=True,
-        choices=sorted(ENTSOE_DATASETS),
+        choices=sorted(constants.ENTSOE_DATASETS),
         help="Dataset names to download, parse, and combine.",
     )
     parser.add_argument(
@@ -53,6 +58,12 @@ def parse_command_line_arguments() -> argparse.Namespace:
         "--end",
         required=True,
         help="Exclusive end delivery date in German local time, format DD-MM-YYYY.",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["test", "modelling"],
+        default="test",
+        help="Folder naming mode. 'test' uses DataSet<i>; 'modelling' uses a standard modelling name.",
     )
     parser.add_argument("--env", default=".env", help="Path to the local .env file.")
     return parser.parse_args()
@@ -111,6 +122,19 @@ def markdown_table(headers: list[str], rows: list[list[object]]) -> str:
     return "\n".join(lines)
 
 
+def format_elapsed_time(seconds: float) -> str:
+    """Format a runtime duration for command-line output."""
+
+    minutes, remaining_seconds = divmod(seconds, 60)
+    hours, minutes = divmod(int(minutes), 60)
+
+    if hours:
+        return f"{hours} h {minutes} min {remaining_seconds:.1f} sec"
+    if minutes:
+        return f"{minutes} min {remaining_seconds:.1f} sec"
+    return f"{remaining_seconds:.1f} sec"
+
+
 def write_qa_report(
     report_path: Path,
     dataset_name: str,
@@ -144,7 +168,7 @@ def write_qa_report(
 
     source_rows = []
     for dataset in datasets:
-        request = ENTSOE_DATASETS[dataset]
+        request = constants.ENTSOE_DATASETS[dataset]
         source_rows.append(
             [
                 dataset,
@@ -165,7 +189,7 @@ def write_qa_report(
 - Dataset folder: `{dataset_name}`
 - Processed CSV: `{processed_csv_path}`
 - Data source: ENTSO-E Transparency Platform REST API
-- API endpoint: `{ENTSOE_BASE_URL}`
+- API endpoint: `{constants.ENTSOE_BASE_URL}`
 - Market: Germany/Luxembourg bidding zone (`DE-LU`)
 - Timezone convention: ENTSO-E XML timestamps are parsed as UTC. `timestamp_utc` is the canonical join key. `timestamp_local` is derived from UTC using `Europe/Berlin` for reporting and delivery-period interpretation.
 - Requested local delivery window: `{date_window.start_local}` to `{date_window.end_local}`; end is exclusive.
@@ -229,9 +253,11 @@ The pipeline does not join on local clock time. ENTSO-E XML timestamps are UTC, 
 def main() -> None:
     """Run the full XML -> interim CSV -> combined CSV workflow."""
 
+    started_at = time.perf_counter()
     args = parse_command_line_arguments()
     date_window = parse_local_date_window(args.start, args.end)
-    folders = create_dataset_folders()
+    date_chunks = split_local_date_window_into_months(args.start, args.end)
+    folders = create_folders_for_mode(args.mode, args.start, args.end)
 
     print(f"Created run folders: {folders.name}")
     print(f"  raw: {folders.raw}")
@@ -240,23 +266,30 @@ def main() -> None:
     print("Requested German local delivery window:")
     print(f"  local: {date_window.start_local} to {date_window.end_local}")
     print(f"  UTC/API: {date_window.entsoe_start} to {date_window.entsoe_end}")
+    print(f"  API chunks: {len(date_chunks)} monthly chunk(s)")
 
     for dataset in args.datasets:
-        xml_path = folders.raw / f"{dataset}.xml"
         csv_path = folders.interim / f"{dataset}.csv"
+        xml_paths: list[Path] = []
 
         print(f"\nDownloading {dataset}...")
-        response = send_entsoe_get_request(
-            dataset,
-            date_window.entsoe_start,
-            date_window.entsoe_end,
-            env_path=args.env,
-        )
-        save_raw_xml_response(response, xml_path)
-        print(f"  saved XML: {xml_path}")
+        for index, chunk in enumerate(date_chunks, start=1):
+            xml_path = (
+                folders.raw
+                / f"{dataset}_{chunk.entsoe_start}_{chunk.entsoe_end}.xml"
+            )
+            xml_text = send_entsoe_get_request(
+                dataset,
+                chunk.entsoe_start,
+                chunk.entsoe_end,
+                env_path=args.env,
+            )
+            save_raw_xml_response(xml_text, xml_path)
+            xml_paths.append(xml_path)
+            print(f"  chunk {index}/{len(date_chunks)} saved XML: {xml_path}")
 
         print(f"Parsing {dataset}...")
-        write_dataset_csv(xml_path, dataset, csv_path)
+        write_dataset_csv_from_xml_files(xml_paths, dataset, csv_path)
         print(f"  saved CSV: {csv_path}")
 
     combined = write_combined_dataset(
@@ -275,8 +308,14 @@ def main() -> None:
         folders.interim,
         combined.path,
     )
+    feature_dataset = write_feature_dataset(
+        combined.path,
+        folders.processed / "germany_model_features.csv",
+    )
     print(f"\nCombined dataset saved: {combined.path}")
+    print(f"Feature dataset saved: {feature_dataset.path}")
     print(f"QA report saved: {report_path}")
+    print(f"Total runtime: {format_elapsed_time(time.perf_counter() - started_at)}")
 
 
 if __name__ == "__main__":

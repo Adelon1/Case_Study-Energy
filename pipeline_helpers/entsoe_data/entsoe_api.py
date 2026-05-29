@@ -13,37 +13,17 @@ Parsing XML into CSV is intentionally separate from this file.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
 
-from pipeline_helpers.entsoe_data.constants import (
-    ENTSOE_BASE_URL,
-    ENTSOE_DATETIME_FORMAT,
-    EntsoeDatasetRequest,
-    get_entsoe_dataset_request,
-)
+from pipeline_helpers.entsoe_data import constants
 
 
 class EntsoeApiConfigurationError(RuntimeError):
     """Raised when the ENTSO-E API token or local API setup is missing."""
-
-
-@dataclass(frozen=True)
-class EntsoeRawXmlResponse:
-    """Raw ENTSO-E response plus safe request metadata.
-
-    ``safe_request_url`` masks the API token so it can be printed or logged.
-    ``xml_text`` is the original XML body returned by ENTSO-E.
-    """
-
-    dataset: str
-    safe_request_url: str
-    status_code: int
-    xml_text: str
 
 
 def load_entsoe_api_key(env_path: str | Path = ".env") -> str:
@@ -62,10 +42,10 @@ def format_entsoe_datetime(value: datetime | str) -> str:
     """Return an ENTSO-E timestamp in ``yyyyMMddHHmm`` format."""
 
     if isinstance(value, datetime):
-        return value.strftime(ENTSOE_DATETIME_FORMAT)
+        return value.strftime(constants.ENTSOE_DATETIME_FORMAT)
 
     try:
-        datetime.strptime(value, ENTSOE_DATETIME_FORMAT)
+        datetime.strptime(value, constants.ENTSOE_DATETIME_FORMAT)
     except ValueError as exc:
         raise ValueError(
             f"Invalid ENTSO-E timestamp '{value}'. Expected yyyyMMddHHmm, e.g. 202501010000."
@@ -74,13 +54,13 @@ def format_entsoe_datetime(value: datetime | str) -> str:
 
 
 def build_get_query_parameters(
-    dataset: str | EntsoeDatasetRequest,
+    dataset: str,
     start: datetime | str,
     end: datetime | str,
 ) -> dict[str, str]:
     """Build ENTSO-E GET query parameters without secrets."""
 
-    dataset_request = get_entsoe_dataset_request(dataset) if isinstance(dataset, str) else dataset
+    dataset_request = constants.get_entsoe_dataset_request(dataset)
     return {
         **dataset_request.params,
         "periodStart": format_entsoe_datetime(start),
@@ -94,17 +74,17 @@ def send_entsoe_get_request(
     end: datetime | str,
     env_path: str | Path = ".env",
     timeout_seconds: int = 60,
-) -> EntsoeRawXmlResponse:
-    """Send one ENTSO-E GET request and return the raw XML response."""
+) -> str:
+    """Send one ENTSO-E GET request and return the raw XML body."""
 
     api_key = load_entsoe_api_key(env_path)
     params = build_get_query_parameters(dataset, start, end)
     headers = {"SECURITY_TOKEN": api_key}
 
-    safe_request = requests.Request("GET", ENTSOE_BASE_URL, params=params).prepare()
+    safe_request = requests.Request("GET", constants.ENTSOE_BASE_URL, params=params).prepare()
     try:
         response = requests.get(
-            ENTSOE_BASE_URL,
+            constants.ENTSOE_BASE_URL,
             params=params,
             headers=headers,
             timeout=timeout_seconds,
@@ -116,18 +96,13 @@ def send_entsoe_get_request(
             f"Safe request URL: {safe_request.url}"
         ) from exc
 
-    return EntsoeRawXmlResponse(
-        dataset=dataset,
-        safe_request_url=safe_request.url or ENTSOE_BASE_URL,
-        status_code=response.status_code,
-        xml_text=response.text,
-    )
+    return response.text
 
 
-def save_raw_xml_response(response: EntsoeRawXmlResponse, output_path: str | Path) -> Path:
-    """Write a raw ENTSO-E XML response to disk and return the saved path."""
+def save_raw_xml_response(xml_text: str, output_path: str | Path) -> Path:
+    """Write raw ENTSO-E XML text to disk and return the saved path."""
 
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(response.xml_text, encoding="utf-8")
+    path.write_text(xml_text, encoding="utf-8")
     return path

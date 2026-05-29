@@ -17,11 +17,6 @@ ENTSOE_BASE_URL = "https://web-api.tp.entsoe.eu/api"
 # Historical periods before the 2018 bidding-zone split may need DE-AT-LU.
 GERMANY_LUXEMBOURG_BIDDING_ZONE_EIC = "10Y1001A1001A82H"
 
-# Germany country/control-area EIC. Some ENTSO-E endpoints use country/control
-# area codes instead of bidding-zone codes, so we keep this available.
-GERMANY_COUNTRY_EIC = "10Y1001A1001A83F"
-
-DEFAULT_MARKET = "DE_LU"
 GERMANY_MARKET_TIMEZONE = "Europe/Berlin"
 ENTSOE_DATETIME_FORMAT = "%Y%m%d%H%M"
 
@@ -30,14 +25,9 @@ ENTSOE_DATETIME_FORMAT = "%Y%m%d%H%M"
 class EntsoeDatasetRequest:
     """Named ENTSO-E API request template.
 
-    Attributes
-    ----------
-    name:
-        Human-readable dataset key used by our pipeline steps.
-    description:
-        Short explanation for documentation and command output.
-    params:
-        ENTSO-E query parameters except token and date range.
+    ``params`` contains the ENTSO-E query parameters except token and date
+    range. ``value_tag`` and ``output_column`` tell the XML parser what to read
+    and how the final CSV column should be named.
     """
 
     name: str

@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from functools import reduce
 from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 
-from pipeline_helpers.entsoe_data.constants import GERMANY_MARKET_TIMEZONE, get_entsoe_dataset_request
+from pipeline_helpers.entsoe_data import constants
 
 
 @dataclass(frozen=True)
@@ -35,20 +34,20 @@ def combine_interim_csvs(interim_folder: str | Path, datasets: list[str]) -> pd.
     for dataset in datasets:
         path = interim_folder / f"{dataset}.csv"
         table = read_standardized_dataset_csv(path)
-        expected_column = get_entsoe_dataset_request(dataset).output_column
+        expected_column = constants.get_entsoe_dataset_request(dataset).output_column
         if expected_column not in table.columns:
             raise ValueError(f"Expected column '{expected_column}' missing from {path}")
         tables.append(table)
 
-    combined = reduce(
-        lambda left, right: pd.merge(left, right, on="timestamp_utc", how="outer"),
-        tables,
-    )
+    combined = tables[0]
+    for table in tables[1:]:
+        combined = pd.merge(combined, table, on="timestamp_utc", how="outer")
+
     combined = combined.sort_values("timestamp_utc").reset_index(drop=True)
     combined.insert(
         1,
         "timestamp_local",
-        combined["timestamp_utc"].dt.tz_convert(GERMANY_MARKET_TIMEZONE),
+        combined["timestamp_utc"].dt.tz_convert(constants.GERMANY_MARKET_TIMEZONE),
     )
     return combined
 
@@ -87,7 +86,7 @@ def aggregate_to_hourly(table: pd.DataFrame) -> pd.DataFrame:
     hourly.insert(
         1,
         "timestamp_local",
-        hourly["timestamp_utc"].dt.tz_convert(GERMANY_MARKET_TIMEZONE),
+        hourly["timestamp_utc"].dt.tz_convert(constants.GERMANY_MARKET_TIMEZONE),
     )
     return hourly
 

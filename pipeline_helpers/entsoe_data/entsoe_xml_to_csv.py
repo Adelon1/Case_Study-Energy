@@ -9,7 +9,7 @@ from xml.etree import ElementTree as ET
 
 import pandas as pd
 
-from pipeline_helpers.entsoe_data.constants import get_entsoe_dataset_request
+from pipeline_helpers.entsoe_data import constants
 
 RESOLUTION_PATTERN = re.compile(r"^PT(?P<number>\d+)(?P<unit>M|H)$")
 
@@ -126,7 +126,7 @@ def parse_entsoe_xml_to_table(xml_path: str | Path, dataset: str) -> pd.DataFram
     prices keep only Sequence 1 and read ``price.amount``.
     """
 
-    dataset_request = get_entsoe_dataset_request(dataset)
+    dataset_request = constants.get_entsoe_dataset_request(dataset)
     xml_path = Path(xml_path)
     root = ET.parse(xml_path).getroot()
     namespace = xml_namespace(root)
@@ -173,11 +173,23 @@ def parse_entsoe_xml_to_table(xml_path: str | Path, dataset: str) -> pd.DataFram
     return table.reset_index(drop=True)
 
 
-def write_dataset_csv(xml_path: str | Path, dataset: str, output_path: str | Path) -> Path:
-    """Parse one ENTSO-E XML file and write the standardized CSV output."""
+def write_dataset_csv_from_xml_files(
+    xml_paths: list[Path],
+    dataset: str,
+    output_path: str | Path,
+) -> Path:
+    """Parse several XML chunks for one dataset and write one interim CSV."""
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    table = parse_entsoe_xml_to_table(xml_path, dataset)
+
+    tables = [parse_entsoe_xml_to_table(path, dataset) for path in xml_paths]
+    if not tables:
+        request = constants.get_entsoe_dataset_request(dataset)
+        table = pd.DataFrame(columns=["timestamp_utc", request.output_column])
+    else:
+        table = pd.concat(tables, ignore_index=True)
+        table = table.sort_values("timestamp_utc").drop_duplicates("timestamp_utc", keep="last")
+
     table.to_csv(output_path, index=False)
     return output_path
