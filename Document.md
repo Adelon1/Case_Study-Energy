@@ -88,3 +88,69 @@ Raw API responses should be preserved in their native format: XML for ENTSO-E an
 
 **Follow-up notes:**  
 The canonical timestamp should be UTC, with local German market time stored as an additional column for reporting and DST checks. Generated data files stay out of git; only directory placeholders should be committed.
+
+## 2026-05-29 17:32: Modelling Validation Design
+
+**Question / topic:**  
+How should the baseline model, rolling validation, hyperparameter tuning, and final holdout test be structured?
+
+**Answer / decision:**  
+The next stage should introduce a new modelling helper area, for example:
+
+```text
+pipeline_helpers/
+  modelling/
+    constants.py
+    metrics.py
+    validation.py
+    baseline_week_lag.py
+```
+
+Each model should expose the same simple interface:
+
+```python
+PARAM_GRID = [...]
+
+def train(train_data, params):
+    ...
+
+def predict(model_state, test_data, params):
+    ...
+```
+
+The validation code should not know model-specific hyperparameters. Instead, each model declares its own `PARAM_GRID`, and validation loops over those parameter settings. This lets the same validation engine work for the weekly baseline, LEAR-style regression, and gradient boosting.
+
+The baseline model should be implemented first as a seasonal naive forecast, mainly `price_lag_168`, meaning the prediction for an hour is the price from the same hour one week earlier. Its `train` function can return no fitted state, but it should still exist to keep the interface consistent.
+
+**Validation purpose:**  
+Rolling validation is used to choose model settings and compare model families. It answers whether a model works repeatedly across different historical market periods, not just in one lucky train/test split.
+
+**Final holdout decision:**  
+The final holdout should not be hardcoded by date. Instead, validation should infer it from the data:
+
+- the last `TEST_MONTHS` of the available dataset are reserved as the untouched final holdout;
+- rolling validation/tuning must only use data before that final holdout;
+- final testing trains on the previous `TRAIN_MONTHS` immediately before the holdout and tests on the final `TEST_MONTHS`.
+
+Use one consistent forecasting task:
+
+```python
+TRAIN_MONTHS = 24
+TEST_MONTHS = 1
+STEP_MONTHS = 3
+```
+
+So validation repeatedly does:
+
+```text
+train previous 24 months -> test next 1 month -> step forward 3 months
+```
+
+And final holdout does:
+
+```text
+train previous 24 months before the final month -> test the final month
+```
+
+**Follow-up notes:**  
+This keeps validation and final testing aligned with the operational goal: forecast the near future, specifically the next month, from a fixed recent training window. Longer final holdout tests were considered, but rejected for now because they would answer a slightly different question than the rolling validation setup.
