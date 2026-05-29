@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 from functools import reduce
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 
-from pipeline_helpers.constants import GERMANY_MARKET_TIMEZONE, get_entsoe_dataset_request
+from pipeline_helpers.entsoe_data.constants import GERMANY_MARKET_TIMEZONE, get_entsoe_dataset_request
+
+
+@dataclass(frozen=True)
+class CombinedDataset:
+    """Path and in-memory table produced by the combine stage."""
+
+    path: Path
+    table: pd.DataFrame
 
 
 def read_standardized_dataset_csv(path: str | Path) -> pd.DataFrame:
@@ -90,7 +99,7 @@ def write_combined_dataset(
     start_utc: pd.Timestamp | None = None,
     end_utc: pd.Timestamp | None = None,
     output_filename: str = "germany_model_dataset.csv",
-) -> Path:
+) -> CombinedDataset:
     """Combine parsed dataset CSVs and write one processed model dataset."""
 
     processed_folder = Path(processed_folder)
@@ -101,4 +110,4 @@ def write_combined_dataset(
     combined = aggregate_to_hourly(combined)
     output_path = processed_folder / output_filename
     combined.to_csv(output_path, index=False)
-    return output_path
+    return CombinedDataset(path=output_path, table=combined)

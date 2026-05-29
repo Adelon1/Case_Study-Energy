@@ -9,7 +9,7 @@ from xml.etree import ElementTree as ET
 
 import pandas as pd
 
-from pipeline_helpers.constants import get_entsoe_dataset_request
+from pipeline_helpers.entsoe_data.constants import get_entsoe_dataset_request
 
 RESOLUTION_PATTERN = re.compile(r"^PT(?P<number>\d+)(?P<unit>M|H)$")
 

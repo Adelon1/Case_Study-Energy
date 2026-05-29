@@ -20,7 +20,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-from pipeline_helpers.constants import (
+from pipeline_helpers.entsoe_data.constants import (
     ENTSOE_BASE_URL,
     ENTSOE_DATETIME_FORMAT,
     EntsoeDatasetRequest,

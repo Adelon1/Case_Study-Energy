@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from pipeline_helpers.constants import ENTSOE_DATETIME_FORMAT, GERMANY_MARKET_TIMEZONE
+from pipeline_helpers.entsoe_data.constants import ENTSOE_DATETIME_FORMAT, GERMANY_MARKET_TIMEZONE
 
 
 @dataclass(frozen=True)
