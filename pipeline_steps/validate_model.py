@@ -24,9 +24,12 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
+import joblib
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -36,9 +39,11 @@ if str(PROJECT_ROOT) not in sys.path:
 from pipeline_helpers.modelling import constants  # noqa: E402
 from pipeline_helpers.modelling.validation import (  # noqa: E402
     average_metrics_by_params,
+    build_final_holdout_window,
     load_feature_data,
     run_final_holdout_test,
     run_rolling_validation,
+    slice_window,
 )
 
 
@@ -148,6 +153,56 @@ def write_result_csv(table: pd.DataFrame, path: Path) -> None:
     format_result_table(table).to_csv(path, index=False, sep=";")
 
 
+def write_json(data: dict[str, object], path: Path) -> None:
+    """Write a small JSON artifact with stable formatting."""
+
+    path.write_text(json.dumps(data, indent=2, sort_keys=True, default=str), encoding="utf-8")
+
+
+def save_final_model_artifacts(
+    table: pd.DataFrame,
+    feature_path: Path,
+    output_folder: Path,
+    model_module,
+    model_options: dict[str, object],
+    best_params: dict[str, object],
+) -> tuple[Path, Path, Path]:
+    """Train and save the final holdout model for later reuse."""
+
+    window = build_final_holdout_window(table)
+    train_data = slice_window(table, window.train_begin, window.train_end)
+    model_state = model_module.train(train_data, best_params)
+
+    model_path = output_folder / "final_holdout_model.joblib"
+    best_params_path = output_folder / "best_params.json"
+    metadata_path = output_folder / "model_metadata.json"
+
+    joblib.dump(model_state, model_path)
+    write_json(best_params, best_params_path)
+    write_json(
+        {
+            "model": model_module.MODEL_NAME,
+            "model_options": model_options,
+            "best_params": best_params,
+            "feature_csv": str(feature_path),
+            "training_window": {
+                "train_begin": window.train_begin,
+                "train_end": window.train_end,
+                "test_begin": window.test_begin,
+                "test_end": window.test_end,
+            },
+            "created_at_utc": datetime.now(timezone.utc).isoformat(),
+            "artifact_note": (
+                "This model is trained on the final holdout training window. "
+                "For another requested delivery period, retrain on the previous "
+                "rolling training window."
+            ),
+        },
+        metadata_path,
+    )
+    return model_path, best_params_path, metadata_path
+
+
 def main() -> None:
     """Run validation, final holdout, and write result CSVs."""
 
@@ -183,6 +238,14 @@ def main() -> None:
     write_result_csv(validation_summary, validation_summary_path)
     write_result_csv(final_metrics, final_metrics_path)
     final_predictions.to_csv(final_predictions_path, index=False)
+    model_path, best_params_path, metadata_path = save_final_model_artifacts(
+        table,
+        feature_path,
+        output_folder,
+        model_module,
+        model_options,
+        validation_result.best_params,
+    )
 
     if args.save_validation_predictions:
         validation_result.predictions.to_csv(validation_predictions_path, index=False)
@@ -198,6 +261,9 @@ def main() -> None:
     print(f"  validation summary: {validation_summary_path}")
     print(f"  final holdout metrics: {final_metrics_path}")
     print(f"  final holdout predictions: {final_predictions_path}")
+    print(f"  best params: {best_params_path}")
+    print(f"  saved final model: {model_path}")
+    print(f"  model metadata: {metadata_path}")
     if args.save_validation_predictions:
         print(f"  validation predictions: {validation_predictions_path}")
     else:
