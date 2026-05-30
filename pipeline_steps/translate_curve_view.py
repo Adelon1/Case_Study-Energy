@@ -18,6 +18,7 @@ Interactive mode:
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 
@@ -96,6 +97,11 @@ def parse_command_line_arguments() -> argparse.Namespace:
         "--force-retrain",
         action="store_true",
         help="Retrain for the requested period even if existing predictions cover it.",
+    )
+    parser.add_argument(
+        "--ai-commentary",
+        action="store_true",
+        help="After writing each curve view, call the AI commentary pipeline step.",
     )
     return parser.parse_args()
 
@@ -182,6 +188,20 @@ def normalize_blocks(blocks: str | list[str]) -> list[str]:
     return selected_blocks
 
 
+def generate_ai_commentary(summary_path: Path) -> None:
+    """Call the AI commentary pipeline step for one curve-view summary."""
+
+    subprocess.run(
+        [
+            sys.executable,
+            "pipeline_steps/generate_ai_commentary.py",
+            "--summary",
+            str(summary_path),
+        ],
+        check=True,
+    )
+
+
 def main() -> None:
     """Create a curve-translation report."""
 
@@ -238,6 +258,9 @@ def main() -> None:
         print(f"  Confidence score: {view.confidence_score:.2f}")
         print(f"  Summary CSV: {summary_path}")
         print(f"  Report: {report_path}")
+
+        if args.ai_commentary:
+            generate_ai_commentary(summary_path)
 
 
 if __name__ == "__main__":
