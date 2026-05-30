@@ -25,22 +25,18 @@ SUPPORTED_TARGET_TRANSFORMS = {"raw", "asinh"}
 FEATURE_COLUMNS = [
     "load_forecast_mw",
     "solar_forecast_mw",
-    "wind_onshore_forecast_mw",
-    "wind_offshore_forecast_mw",
     "wind_total_forecast_mw",
-    "renewable_total_forecast_mw",
     "residual_load_forecast_mw",
     "wind_share_of_load",
     "solar_share_of_load",
     "renewable_share_of_load",
-    "weekday",
-    "month",
-    "day_of_year",
     "is_weekend",
     "weekday_sin",
     "weekday_cos",
     "month_sin",
     "month_cos",
+    "day_of_year_sin",
+    "day_of_year_cos",
     "price_lag_24",
     "price_lag_48",
     "price_lag_168",
@@ -49,6 +45,21 @@ FEATURE_COLUMNS = [
     "price_rolling_mean_168",
     "price_rolling_std_168",
 ]
+
+for day_lag in [1, 2, 7]:
+    FEATURE_COLUMNS.extend(
+        f"price_d{day_lag}_h{hour:02d}"
+        for hour in range(24)
+    )
+
+for day_lag in [1, 7]:
+    FEATURE_COLUMNS.extend(
+        [
+            f"price_d{day_lag}_min",
+            f"price_d{day_lag}_max",
+            f"price_d{day_lag}_mean",
+        ]
+    )
 
 
 @dataclass(frozen=True)
@@ -138,9 +149,20 @@ def inverse_transform_prediction(y_pred: np.ndarray, target_transform: str) -> n
 
 
 def available_feature_columns(table: pd.DataFrame) -> list[str]:
-    """Return configured feature columns that are present in the input data."""
+    """Return configured feature columns, failing loudly if any are missing."""
 
-    return [column for column in FEATURE_COLUMNS if column in table.columns]
+    missing_columns = [
+        column for column in FEATURE_COLUMNS if column not in table.columns
+    ]
+    if missing_columns:
+        missing_preview = ", ".join(missing_columns[:10])
+        if len(missing_columns) > 10:
+            missing_preview = f"{missing_preview}, ..."
+        raise ValueError(
+            "Configured LEAR features are missing from the feature table: "
+            f"{missing_preview}"
+        )
+    return FEATURE_COLUMNS.copy()
 
 
 def build_regressor(params: dict[str, object]):
@@ -150,7 +172,7 @@ def build_regressor(params: dict[str, object]):
     alpha = float(params["alpha"])
 
     if regularization == "lasso":
-        return Lasso(alpha=alpha, max_iter=50000, tol=1e-3, selection="random", random_state=0)
+        return Lasso(alpha=alpha, max_iter=50000, tol=1e-4, selection="cyclic")
     if regularization == "ridge":
         return Ridge(alpha=alpha)
     if regularization == "elasticnet":
@@ -158,9 +180,8 @@ def build_regressor(params: dict[str, object]):
             alpha=alpha,
             l1_ratio=float(params["l1_ratio"]),
             max_iter=50000,
-            tol=1e-3,
-            selection="random",
-            random_state=0,
+            tol=1e-4,
+            selection="cyclic",
         )
     raise ValueError(f"Unsupported regularization: {regularization}")
 
@@ -204,7 +225,7 @@ def train(train_data: pd.DataFrame, params: dict[str, object]) -> LearModelState
 def predict(
     model_state: LearModelState,
     test_data: pd.DataFrame,
-    params: dict[str, object],
+    _params: dict[str, object],
 ) -> pd.Series:
     """Predict each test row with the model fitted for its delivery hour."""
 

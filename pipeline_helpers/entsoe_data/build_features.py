@@ -94,6 +94,8 @@ def add_calendar_features(table: pd.DataFrame) -> pd.DataFrame:
     features["weekday_cos"] = np.cos(2 * np.pi * features["weekday"] / 7)
     features["month_sin"] = np.sin(2 * np.pi * features["month"] / 12)
     features["month_cos"] = np.cos(2 * np.pi * features["month"] / 12)
+    features["day_of_year_sin"] = np.sin(2 * np.pi * features["day_of_year"] / 366)
+    features["day_of_year_cos"] = np.cos(2 * np.pi * features["day_of_year"] / 366)
 
     return features
 
@@ -119,6 +121,53 @@ def add_price_lag_features(table: pd.DataFrame) -> pd.DataFrame:
     return features
 
 
+def add_daily_price_curve_lag_features(table: pd.DataFrame) -> pd.DataFrame:
+    """Add previous daily price shapes for LEAR-style intraday dependence."""
+
+    features = table.copy()
+    local_time = pd.to_datetime(features["timestamp_utc"], utc=True).dt.tz_convert(
+        constants.GERMANY_MARKET_TIMEZONE
+    )
+    features["local_date_for_lags"] = local_time.dt.date
+
+    daily_price_curve = features.pivot_table(
+        index="local_date_for_lags",
+        columns="hour",
+        values=PRICE_COLUMN,
+        aggfunc="last",
+    ).reindex(columns=range(24))
+
+    for day_lag in [1, 2, 7]:
+        lagged_curve = daily_price_curve.shift(day_lag)
+        lagged_curve.columns = [
+            f"price_d{day_lag}_h{hour:02d}"
+            for hour in lagged_curve.columns
+        ]
+        features = features.merge(
+            lagged_curve,
+            left_on="local_date_for_lags",
+            right_index=True,
+            how="left",
+        )
+
+    for day_lag in [1, 7]:
+        shifted_daily_price = daily_price_curve.shift(day_lag)
+        features = features.merge(
+            pd.DataFrame(
+                {
+                    f"price_d{day_lag}_min": shifted_daily_price.min(axis=1),
+                    f"price_d{day_lag}_max": shifted_daily_price.max(axis=1),
+                    f"price_d{day_lag}_mean": shifted_daily_price.mean(axis=1),
+                }
+            ),
+            left_on="local_date_for_lags",
+            right_index=True,
+            how="left",
+        )
+
+    return features.drop(columns=["local_date_for_lags"])
+
+
 def build_feature_table(clean_hourly_dataset: pd.DataFrame) -> pd.DataFrame:
     """Build the modelling-ready feature table from clean hourly data."""
 
@@ -128,6 +177,7 @@ def build_feature_table(clean_hourly_dataset: pd.DataFrame) -> pd.DataFrame:
     features = add_fundamental_features(features)
     features = add_calendar_features(features)
     features = add_price_lag_features(features)
+    features = add_daily_price_curve_lag_features(features)
 
     required_lag_columns = [
         "price_lag_24",
@@ -135,6 +185,11 @@ def build_feature_table(clean_hourly_dataset: pd.DataFrame) -> pd.DataFrame:
         "price_lag_168",
         "price_rolling_mean_24",
         "price_rolling_mean_168",
+        "price_d1_h00",
+        "price_d2_h00",
+        "price_d7_h00",
+        "price_d1_mean",
+        "price_d7_mean",
     ]
     features = features.dropna(subset=required_lag_columns).reset_index(drop=True)
     return features

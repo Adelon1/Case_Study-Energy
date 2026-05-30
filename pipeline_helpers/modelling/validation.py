@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -213,6 +214,17 @@ def evaluate_model_on_window(
     y_pred = model_module.predict(model_state, test_data, params)
     y_true = test_data[constants.TARGET_COLUMN]
     metrics = calculate_metrics(y_true, y_pred)
+    n_test_rows = len(test_data)
+    n_predicted_rows = int(y_pred.notna().sum())
+    prediction_coverage = n_predicted_rows / n_test_rows if n_test_rows else 0.0
+
+    if prediction_coverage < constants.MIN_PREDICTION_COVERAGE:
+        warnings.warn(
+            f"{model_module.MODEL_NAME} prediction coverage below "
+            f"{constants.MIN_PREDICTION_COVERAGE:.0%}: "
+            f"{prediction_coverage:.2%} for {split_name} fold {fold_number}",
+            RuntimeWarning,
+        )
 
     metric_row = {
         "model": model_module.MODEL_NAME,
@@ -223,6 +235,9 @@ def evaluate_model_on_window(
         "train_end": window.train_end,
         "test_begin": window.test_begin,
         "test_end": window.test_end,
+        "n_test_rows": n_test_rows,
+        "n_predicted_rows": n_predicted_rows,
+        "prediction_coverage": prediction_coverage,
         **metrics,
     }
 

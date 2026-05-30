@@ -9,8 +9,13 @@ Example:
       --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
       --model lear_model \
       --regularization elasticnet \
-      --target-transform asinh
+      --target-transform raw
 
+    .venv/bin/python pipeline_steps/validate_model.py \
+      --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
+      --model hist_gradient_boosting \
+      --target-transform raw
+      
 Outputs are written to a model-specific folder next to the feature CSV unless
 ``--output-folder`` is provided.
 """
@@ -67,7 +72,7 @@ def parse_command_line_arguments() -> argparse.Namespace:
         "--target-transform",
         choices=["raw", "asinh"],
         default=None,
-        help="Target transform for models that support it. LEAR defaults to raw.",
+        help="Target transform for models that support it. Defaults to raw where supported.",
     )
     return parser.parse_args()
 
