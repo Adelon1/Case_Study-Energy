@@ -31,6 +31,10 @@ if str(PROJECT_ROOT) not in sys.path:
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 
 
+class OpenAIRequestError(RuntimeError):
+    """Raised when the OpenAI API returns a non-success response."""
+
+
 def parse_command_line_arguments() -> argparse.Namespace:
     """Read commentary generation settings from the command line."""
 
@@ -108,7 +112,10 @@ def call_openai_responses_api(prompt: str, api_key: str, model: str) -> dict[str
         },
         timeout=60,
     )
-    response.raise_for_status()
+    if not response.ok:
+        raise OpenAIRequestError(
+            f"OpenAI API returned HTTP {response.status_code}: {response.text}"
+        )
     return response.json()
 
 
@@ -133,6 +140,34 @@ def extract_output_text(response_json: dict[str, object]) -> str:
     return "\n".join(text_parts)
 
 
+def deterministic_fallback_commentary(summary: dict[str, object], failure_reason: str) -> str:
+    """Create a non-LLM commentary so the pipeline still completes."""
+
+    return f"""# Fallback Curve Commentary
+
+The LLM commentary call failed, so this deterministic fallback was generated from the curve-view summary only.
+
+- Period UTC: `{summary.get("period_start_utc")}` to `{summary.get("period_end_utc")}`
+- Block: `{summary.get("block")}`
+- Signal: **{summary.get("signal")}**
+- Forecast fair value: `{summary.get("forecast_fair_value")}` EUR/MWh
+- Benchmark method: `{summary.get("benchmark_method")}`
+- Benchmark value: `{summary.get("benchmark_value")}` EUR/MWh
+- Edge: `{summary.get("edge")}` EUR/MWh
+- MAE: `{summary.get("mae")}` EUR/MWh
+- Tail metric: `{summary.get("tail_metric_name")}` = `{summary.get("tail_metric_value")}` EUR/MWh
+- Risk buffer: `{summary.get("risk_buffer")}` EUR/MWh
+- Confidence score: `{summary.get("confidence_score")}`
+- Prediction coverage: `{summary.get("prediction_coverage")}`
+
+Desk action: {summary.get("desk_action")}
+
+Invalidation logic: {summary.get("invalidation_logic")}
+
+LLM failure reason: `{failure_reason}`
+"""
+
+
 def main() -> None:
     """Generate commentary and required logs."""
 
@@ -148,18 +183,6 @@ def main() -> None:
 
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip()
-    if not api_key:
-        write_json_log(
-            failure_log_path,
-            {
-                "created_at_utc": datetime.now(timezone.utc).isoformat(),
-                "model": model,
-                "summary_path": str(summary_path),
-                "error_type": "MissingOpenAIAPIKey",
-                "error_message": "OPENAI_API_KEY is missing from .env or the environment.",
-            },
-        )
-        raise ValueError("OPENAI_API_KEY is missing. Add it to .env or the environment.")
 
     summary = read_curve_summary(summary_path)
     prompt = build_prompt(summary)
@@ -178,6 +201,28 @@ def main() -> None:
         },
     )
 
+    if not api_key:
+        failure_reason = "OPENAI_API_KEY is missing from .env or the environment."
+        commentary_path.write_text(
+            deterministic_fallback_commentary(summary, failure_reason),
+            encoding="utf-8",
+        )
+        write_json_log(
+            failure_log_path,
+            {
+                "created_at_utc": datetime.now(timezone.utc).isoformat(),
+                "model": model,
+                "summary_path": str(summary_path),
+                "commentary_path": str(commentary_path),
+                "error_type": "MissingOpenAIAPIKey",
+                "error_message": failure_reason,
+                "fallback_used": True,
+            },
+        )
+        print(f"Fallback commentary saved: {commentary_path}")
+        print(f"Failure log saved: {failure_log_path}")
+        return
+
     try:
         response_json = call_openai_responses_api(prompt, api_key, model)
         commentary = extract_output_text(response_json)
@@ -192,17 +237,25 @@ def main() -> None:
             },
         )
     except Exception as exc:
+        commentary_path.write_text(
+            deterministic_fallback_commentary(summary, str(exc)),
+            encoding="utf-8",
+        )
         write_json_log(
             failure_log_path,
             {
                 "created_at_utc": datetime.now(timezone.utc).isoformat(),
                 "model": model,
                 "summary_path": str(summary_path),
+                "commentary_path": str(commentary_path),
                 "error_type": type(exc).__name__,
                 "error_message": str(exc),
+                "fallback_used": True,
             },
         )
-        raise
+        print(f"Fallback commentary saved: {commentary_path}")
+        print(f"Failure log saved: {failure_log_path}")
+        return
 
     print(f"AI commentary saved: {commentary_path}")
     print(f"Prompt log saved: {prompt_log_path}")

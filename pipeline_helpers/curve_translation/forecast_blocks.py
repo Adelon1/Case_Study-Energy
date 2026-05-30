@@ -66,13 +66,13 @@ def filter_delivery_period(table: pd.DataFrame, period: DeliveryPeriod) -> pd.Da
 
 
 def peakload_mask(timestamps: pd.Series) -> pd.Series:
-    """Return weekday daytime rows using a simple UTC peakload convention."""
+    """Return weekday daytime rows in German local market time."""
 
-    timestamps = pd.to_datetime(timestamps, utc=True)
-    is_weekday = timestamps.dt.weekday < 5
+    local = pd.to_datetime(timestamps, utc=True).dt.tz_convert(constants.MARKET_TIMEZONE)
+    is_weekday = local.dt.weekday < 5
     is_peak_hour = (
-        (timestamps.dt.hour >= constants.PEAK_START_HOUR)
-        & (timestamps.dt.hour < constants.PEAK_END_HOUR)
+        (local.dt.hour >= constants.PEAK_START_HOUR)
+        & (local.dt.hour < constants.PEAK_END_HOUR)
     )
     return is_weekday & is_peak_hour
 
