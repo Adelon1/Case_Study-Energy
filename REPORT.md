@@ -45,6 +45,12 @@ Target approach:
 
 - Option A: forecast hourly day-ahead prices and aggregate to curve-relevant delivery periods.
 
+Feature design:
+
+- German local calendar features are used for hour, weekday, month, and annual cycles.
+- UTC remains the canonical timestamp, and full daily price-curve lag features are UTC-based to avoid DST holes.
+- LEAR-style price curve lags include `d-1`, `d-2`, `d-3`, and `d-7`.
+
 Models:
 
 - Seasonal naive baseline using lagged prices.
@@ -54,6 +60,7 @@ Models:
 Validation:
 
 - Rolling-window time-series validation.
+- Final validation cadence uses monthly steps.
 - Final holdout test from the end of the available complete data.
 - No random K-fold split.
 - Scalers are fitted inside model training folds through sklearn pipelines.
@@ -73,6 +80,7 @@ Selected model:
 
 - LASSO raw-price LEAR-style model, selected by rolling validation.
 - ElasticNet and asinh transforms were considered; raw LASSO was kept because validation performance was better on this dataset.
+- Histogram gradient boosting is kept as a nonlinear benchmark, including absolute-error loss candidates.
 
 ## 3. Prompt Curve Translation
 
@@ -135,9 +143,5 @@ ai_logs/*_failure.json
 
 ## Limitations and Future Work
 
-- Add local-time calendar features while keeping UTC as the canonical timestamp.
-- Add `d-3` price curve features.
-- Test HGB with absolute-error loss.
-- Use `STEP_MONTHS = 1` for final validation runs.
 - Add longer final holdout only if evaluating broader robustness rather than one-month operational forecasting.
 - Add neighbouring market prices, fuel, carbon, and flow features if public data access is available.

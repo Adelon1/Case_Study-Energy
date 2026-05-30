@@ -92,6 +92,7 @@ Generate AI commentary for one curve view:
 ## Notes
 
 - UTC is the canonical timestamp and join key.
+- Modelling includes German local calendar features while full daily lag curves remain UTC-based.
 - Curve peakload/offpeak blocks use German local market time.
 - The default benchmark is a proxy, not a traded forward curve. A manual curve price can be supplied when available.
 - API keys are loaded from environment variables only.

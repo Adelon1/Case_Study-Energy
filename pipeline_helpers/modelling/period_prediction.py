@@ -86,6 +86,16 @@ def read_best_params(
     )
 
 
+def model_state_diagnostics(model_state) -> dict[str, object]:
+    """Extract optional diagnostics from fitted model state objects."""
+
+    diagnostics: dict[str, object] = {}
+    for attribute in ["fitted_hours", "n_train_rows_by_hour", "feature_columns"]:
+        if hasattr(model_state, attribute):
+            diagnostics[attribute] = getattr(model_state, attribute)
+    return diagnostics
+
+
 def prediction_file_covers(predictions_path: str | Path, period: PredictionPeriod) -> bool:
     """Check whether a prediction file covers the full requested period."""
 
@@ -193,6 +203,7 @@ def train_and_predict_period(
             "train_end": train_end,
             "prediction_begin": period.start_utc,
             "prediction_end": period.end_utc,
+            "training_diagnostics": model_state_diagnostics(model_state),
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
         },
         metadata_path,

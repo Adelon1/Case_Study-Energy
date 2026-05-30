@@ -75,14 +75,17 @@ def add_fundamental_features(table: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_calendar_features(table: pd.DataFrame) -> pd.DataFrame:
-    """Add calendar features based on UTC time.
+    """Add UTC and German local calendar features.
 
-    The pipeline joins and validates data in UTC. Keeping modelling calendar
-    features in UTC avoids daylight-saving-time days with 23 or 25 local hours.
+    UTC remains the canonical timestamp. Local calendar features are added for
+    modelling because German power demand, solar shape, and weekday behaviour
+    follow German market time. Full daily lag curves remain UTC-based elsewhere
+    to avoid DST days with 23 or 25 local hours.
     """
 
     features = table.copy()
     timestamp_utc = pd.to_datetime(features["timestamp_utc"], utc=True)
+    timestamp_local = timestamp_utc.dt.tz_convert(constants.GERMANY_MARKET_TIMEZONE)
 
     features["hour"] = timestamp_utc.dt.hour
     features["weekday"] = timestamp_utc.dt.weekday
@@ -98,6 +101,36 @@ def add_calendar_features(table: pd.DataFrame) -> pd.DataFrame:
     features["month_cos"] = np.cos(2 * np.pi * features["month"] / 12)
     features["day_of_year_sin"] = np.sin(2 * np.pi * features["day_of_year"] / 366)
     features["day_of_year_cos"] = np.cos(2 * np.pi * features["day_of_year"] / 366)
+
+    features["local_hour"] = timestamp_local.dt.hour
+    features["local_weekday"] = timestamp_local.dt.weekday
+    features["local_month"] = timestamp_local.dt.month
+    features["local_day_of_year"] = timestamp_local.dt.dayofyear
+    features["local_is_weekend"] = features["local_weekday"].isin([5, 6]).astype(int)
+
+    features["local_hour_sin"] = np.sin(2 * np.pi * features["local_hour"] / 24)
+    features["local_hour_cos"] = np.cos(2 * np.pi * features["local_hour"] / 24)
+    features["local_weekday_sin"] = np.sin(2 * np.pi * features["local_weekday"] / 7)
+    features["local_weekday_cos"] = np.cos(2 * np.pi * features["local_weekday"] / 7)
+    features["local_month_sin"] = np.sin(2 * np.pi * features["local_month"] / 12)
+    features["local_month_cos"] = np.cos(2 * np.pi * features["local_month"] / 12)
+    features["local_day_of_year_sin"] = np.sin(
+        2 * np.pi * features["local_day_of_year"] / 366
+    )
+    features["local_day_of_year_cos"] = np.cos(
+        2 * np.pi * features["local_day_of_year"] / 366
+    )
+
+    weekday_dummies = pd.get_dummies(
+        features["local_weekday"],
+        prefix="local_weekday",
+        dtype=int,
+    )
+    features = pd.concat([features, weekday_dummies], axis=1)
+    for weekday in range(7):
+        column = f"local_weekday_{weekday}"
+        if column not in features.columns:
+            features[column] = 0
 
     return features
 
@@ -137,7 +170,7 @@ def add_daily_price_curve_lag_features(table: pd.DataFrame) -> pd.DataFrame:
         aggfunc="last",
     ).reindex(columns=range(24))
 
-    for day_lag in [1, 2, 7]:
+    for day_lag in [1, 2, 3, 7]:
         lagged_curve = daily_price_curve.shift(day_lag)
         lagged_curve.columns = [
             f"price_d{day_lag}_h{hour:02d}"
@@ -187,6 +220,7 @@ def build_feature_table(clean_hourly_dataset: pd.DataFrame) -> pd.DataFrame:
         "price_rolling_mean_168",
         "price_d1_h00",
         "price_d2_h00",
+        "price_d3_h00",
         "price_d7_h00",
         "price_d1_mean",
         "price_d7_mean",

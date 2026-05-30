@@ -240,6 +240,16 @@ def write_json(data: dict[str, object], path: Path) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True, default=str), encoding="utf-8")
 
 
+def model_state_diagnostics(model_state) -> dict[str, object]:
+    """Extract optional diagnostics from fitted model state objects."""
+
+    diagnostics: dict[str, object] = {}
+    for attribute in ["fitted_hours", "n_train_rows_by_hour", "feature_columns"]:
+        if hasattr(model_state, attribute):
+            diagnostics[attribute] = getattr(model_state, attribute)
+    return diagnostics
+
+
 def save_final_model_artifacts(
     table: pd.DataFrame,
     feature_path: Path,
@@ -272,6 +282,7 @@ def save_final_model_artifacts(
                 "test_begin": window.test_begin,
                 "test_end": window.test_end,
             },
+            "training_diagnostics": model_state_diagnostics(model_state),
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
             "artifact_note": (
                 "This model is trained on the final holdout training window. "

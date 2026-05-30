@@ -25,19 +25,19 @@ FEATURE_COLUMNS = [
     "wind_share_of_load",
     "solar_share_of_load",
     "renewable_share_of_load",
-    "hour",
-    "weekday",
-    "month",
-    "day_of_year",
-    "is_weekend",
-    "hour_sin",
-    "hour_cos",
-    "weekday_sin",
-    "weekday_cos",
-    "month_sin",
-    "month_cos",
-    "day_of_year_sin",
-    "day_of_year_cos",
+    "local_hour",
+    "local_weekday",
+    "local_month",
+    "local_day_of_year",
+    "local_is_weekend",
+    "local_hour_sin",
+    "local_hour_cos",
+    "local_weekday_sin",
+    "local_weekday_cos",
+    "local_month_sin",
+    "local_month_cos",
+    "local_day_of_year_sin",
+    "local_day_of_year_cos",
     "price_lag_24",
     "price_lag_48",
     "price_lag_168",
@@ -47,7 +47,9 @@ FEATURE_COLUMNS = [
     "price_rolling_std_168",
 ]
 
-for day_lag in [1, 2, 7]:
+FEATURE_COLUMNS.extend(f"local_weekday_{weekday}" for weekday in range(7))
+
+for day_lag in [1, 2, 3, 7]:
     FEATURE_COLUMNS.extend(
         f"price_d{day_lag}_h{hour:02d}"
         for hour in range(24)
@@ -79,35 +81,48 @@ def build_param_grid(target_transform: str = "raw") -> list[dict[str, object]]:
     return [
         {
             "target_transform": target_transform,
+            "loss": "absolute_error",
+            "learning_rate": 0.03,
+            "max_iter": 800,
+            "max_leaf_nodes": 31,
+            "min_samples_leaf": 20,
+            "l2_regularization": 0.0,
+        },
+        {
+            "target_transform": target_transform,
+            "loss": "absolute_error",
             "learning_rate": 0.05,
-            "max_iter": 300,
+            "max_iter": 600,
             "max_leaf_nodes": 31,
             "min_samples_leaf": 30,
             "l2_regularization": 0.0,
         },
         {
             "target_transform": target_transform,
+            "loss": "absolute_error",
             "learning_rate": 0.05,
-            "max_iter": 500,
-            "max_leaf_nodes": 31,
-            "min_samples_leaf": 50,
-            "l2_regularization": 0.1,
-        },
-        {
-            "target_transform": target_transform,
-            "learning_rate": 0.03,
             "max_iter": 600,
             "max_leaf_nodes": 63,
-            "min_samples_leaf": 50,
+            "min_samples_leaf": 30,
             "l2_regularization": 0.1,
         },
         {
             "target_transform": target_transform,
-            "learning_rate": 0.08,
-            "max_iter": 300,
-            "max_leaf_nodes": 15,
-            "min_samples_leaf": 80,
-            "l2_regularization": 0.3,
+            "loss": "squared_error",
+            "learning_rate": 0.03,
+            "max_iter": 800,
+            "max_leaf_nodes": 31,
+            "min_samples_leaf": 20,
+            "l2_regularization": 0.0,
+        },
+        {
+            "target_transform": target_transform,
+            "loss": "squared_error",
+            "learning_rate": 0.05,
+            "max_iter": 600,
+            "max_leaf_nodes": 63,
+            "min_samples_leaf": 20,
+            "l2_regularization": 0.1,
         },
     ]
 
@@ -168,17 +183,18 @@ def train(train_data: pd.DataFrame, params: dict[str, object]) -> BoostedTreeMod
 
     target_transform = str(params["target_transform"])
     feature_columns = available_feature_columns(train_data)
-    modelling_data = train_data.dropna(subset=[constants.TARGET_COLUMN, *feature_columns])
+    modelling_data = train_data.dropna(subset=[constants.TARGET_COLUMN])
     if modelling_data.empty:
-        raise ValueError("Boosted-tree model has no complete training rows.")
+        raise ValueError("Boosted-tree model has no training rows with a target value.")
 
     model = HistGradientBoostingRegressor(
+        loss=str(params.get("loss", "squared_error")),
         learning_rate=float(params["learning_rate"]),
         max_iter=int(params["max_iter"]),
         max_leaf_nodes=int(params["max_leaf_nodes"]),
         min_samples_leaf=int(params["min_samples_leaf"]),
         l2_regularization=float(params["l2_regularization"]),
-        loss="squared_error",
+        early_stopping=False,
         random_state=0,
     )
     model.fit(
@@ -197,18 +213,14 @@ def predict(
     test_data: pd.DataFrame,
     _params: dict[str, object],
 ) -> pd.Series:
-    """Predict all complete test rows with the pooled boosted-tree model."""
+    """Predict all test rows with the pooled boosted-tree model."""
 
     predictions = pd.Series(index=test_data.index, dtype=float)
-    complete_feature_mask = test_data[model_state.feature_columns].notna().all(axis=1)
-    if not complete_feature_mask.any():
+    if test_data.empty:
         return predictions
 
-    prediction_index = test_data.loc[complete_feature_mask].index
-    transformed_prediction = model_state.model.predict(
-        test_data.loc[complete_feature_mask, model_state.feature_columns]
-    )
-    predictions.loc[prediction_index] = inverse_transform_prediction(
+    transformed_prediction = model_state.model.predict(test_data[model_state.feature_columns])
+    predictions.loc[test_data.index] = inverse_transform_prediction(
         transformed_prediction,
         model_state.target_transform,
     )

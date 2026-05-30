@@ -19,6 +19,7 @@ from pipeline_helpers.modelling import constants
 
 
 MODEL_NAME = "lear_model"
+HOUR_MODEL_COLUMN = "local_hour"
 SUPPORTED_REGULARIZATION = {"lasso", "elasticnet", "ridge"}
 SUPPORTED_TARGET_TRANSFORMS = {"raw", "asinh"}
 
@@ -30,13 +31,15 @@ FEATURE_COLUMNS = [
     "wind_share_of_load",
     "solar_share_of_load",
     "renewable_share_of_load",
-    "is_weekend",
-    "weekday_sin",
-    "weekday_cos",
-    "month_sin",
-    "month_cos",
-    "day_of_year_sin",
-    "day_of_year_cos",
+    "local_is_weekend",
+    "local_hour_sin",
+    "local_hour_cos",
+    "local_weekday_sin",
+    "local_weekday_cos",
+    "local_month_sin",
+    "local_month_cos",
+    "local_day_of_year_sin",
+    "local_day_of_year_cos",
     "price_lag_24",
     "price_lag_48",
     "price_lag_168",
@@ -46,7 +49,9 @@ FEATURE_COLUMNS = [
     "price_rolling_std_168",
 ]
 
-for day_lag in [1, 2, 7]:
+FEATURE_COLUMNS.extend(f"local_weekday_{weekday}" for weekday in range(7))
+
+for day_lag in [1, 2, 3, 7]:
     FEATURE_COLUMNS.extend(
         f"price_d{day_lag}_h{hour:02d}"
         for hour in range(24)
@@ -69,6 +74,8 @@ class LearModelState:
     hourly_models: dict[int, Pipeline]
     feature_columns: list[str]
     target_transform: str
+    n_train_rows_by_hour: dict[int, int]
+    fitted_hours: list[int]
 
 
 def build_param_grid(
@@ -191,13 +198,17 @@ def train(train_data: pd.DataFrame, params: dict[str, object]) -> LearModelState
 
     target_transform = str(params["target_transform"])
     feature_columns = available_feature_columns(train_data)
+    if HOUR_MODEL_COLUMN not in train_data.columns:
+        raise ValueError(f"LEAR needs hourly split column: {HOUR_MODEL_COLUMN}")
     if not feature_columns:
         raise ValueError("No configured LEAR feature columns are available.")
 
     hourly_models: dict[int, Pipeline] = {}
+    n_train_rows_by_hour: dict[int, int] = {}
     for hour in range(24):
-        hour_data = train_data.loc[train_data["hour"] == hour]
+        hour_data = train_data.loc[train_data[HOUR_MODEL_COLUMN] == hour]
         modelling_data = hour_data.dropna(subset=[constants.TARGET_COLUMN, *feature_columns])
+        n_train_rows_by_hour[hour] = len(modelling_data)
         if modelling_data.empty:
             continue
 
@@ -212,13 +223,16 @@ def train(train_data: pd.DataFrame, params: dict[str, object]) -> LearModelState
         estimator.fit(x_train, y_train)
         hourly_models[hour] = estimator
 
-    if not hourly_models:
-        raise ValueError("LEAR could not fit any hourly models.")
+    missing_hours = sorted(set(range(24)) - set(hourly_models))
+    if missing_hours:
+        raise ValueError(f"LEAR did not fit models for hours: {missing_hours}")
 
     return LearModelState(
         hourly_models=hourly_models,
         feature_columns=feature_columns,
         target_transform=target_transform,
+        n_train_rows_by_hour=n_train_rows_by_hour,
+        fitted_hours=sorted(hourly_models),
     )
 
 
@@ -230,9 +244,11 @@ def predict(
     """Predict each test row with the model fitted for its delivery hour."""
 
     predictions = pd.Series(index=test_data.index, dtype=float)
+    if HOUR_MODEL_COLUMN not in test_data.columns:
+        raise ValueError(f"LEAR needs hourly split column: {HOUR_MODEL_COLUMN}")
 
     for hour, estimator in model_state.hourly_models.items():
-        hour_mask = test_data["hour"] == hour
+        hour_mask = test_data[HOUR_MODEL_COLUMN] == hour
         if not hour_mask.any():
             continue
 
