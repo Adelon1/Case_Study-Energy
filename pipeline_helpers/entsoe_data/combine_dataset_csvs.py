@@ -10,12 +10,32 @@ import pandas as pd
 from pipeline_helpers.entsoe_data import constants
 
 
+RAW_FORECAST_INPUT_COLUMNS = [
+    "load_forecast_mw",
+    "solar_forecast_mw",
+    "wind_onshore_forecast_mw",
+    "wind_offshore_forecast_mw",
+]
+
+
+@dataclass(frozen=True)
+class ImputationReport:
+    """Counts from the leakage-safe missing-value fill step."""
+
+    columns: list[str]
+    missing_before: dict[str, int]
+    filled_from_previous_day: dict[str, int]
+    missing_after_fill: dict[str, int]
+    dropped_rows_after_fill: int
+
+
 @dataclass(frozen=True)
 class CombinedDataset:
     """Path and in-memory table produced by the combine stage."""
 
     path: Path
     table: pd.DataFrame
+    imputation_report: ImputationReport
 
 
 def read_standardized_dataset_csv(path: str | Path) -> pd.DataFrame:
@@ -91,6 +111,55 @@ def aggregate_to_hourly(table: pd.DataFrame) -> pd.DataFrame:
     return hourly
 
 
+def fill_missing_forecasts_from_previous_day(
+    table: pd.DataFrame,
+) -> tuple[pd.DataFrame, ImputationReport]:
+    """Fill missing forecast driver values using only the same hour from the previous day.
+
+    ENTSO-E can occasionally miss a full day for one forecast series while other
+    series are available. This fill rule is intentionally simple and
+    leakage-safe: a missing value at timestamp ``t`` may only use the same
+    column at ``t - 24h``. Remaining rows with missing forecast drivers are
+    dropped before feature engineering.
+    """
+
+    filled = table.sort_values("timestamp_utc").reset_index(drop=True).copy()
+    columns = [column for column in RAW_FORECAST_INPUT_COLUMNS if column in filled.columns]
+
+    if not columns:
+        return filled, ImputationReport(
+            columns=[],
+            missing_before={},
+            filled_from_previous_day={},
+            missing_after_fill={},
+            dropped_rows_after_fill=0,
+        )
+
+    missing_before = filled[columns].isna().sum().astype(int).to_dict()
+    filled_from_previous_day: dict[str, int] = {}
+
+    for column in columns:
+        missing_mask = filled[column].isna()
+        filled[column] = filled[column].fillna(filled[column].shift(24))
+        filled_from_previous_day[column] = int((missing_mask & filled[column].notna()).sum())
+
+    missing_after_fill = filled[columns].isna().sum().astype(int).to_dict()
+    rows_with_remaining_missing = filled[columns].isna().any(axis=1)
+    dropped_rows_after_fill = int(rows_with_remaining_missing.sum())
+
+    if dropped_rows_after_fill:
+        filled = filled.loc[~rows_with_remaining_missing].reset_index(drop=True)
+
+    report = ImputationReport(
+        columns=columns,
+        missing_before=missing_before,
+        filled_from_previous_day=filled_from_previous_day,
+        missing_after_fill=missing_after_fill,
+        dropped_rows_after_fill=dropped_rows_after_fill,
+    )
+    return filled, report
+
+
 def write_combined_dataset(
     interim_folder: str | Path,
     processed_folder: str | Path,
@@ -107,6 +176,7 @@ def write_combined_dataset(
     if start_utc is not None and end_utc is not None:
         combined = filter_by_utc_window(combined, start_utc, end_utc)
     combined = aggregate_to_hourly(combined)
+    combined, imputation_report = fill_missing_forecasts_from_previous_day(combined)
     output_path = processed_folder / output_filename
     combined.to_csv(output_path, index=False)
-    return CombinedDataset(path=output_path, table=combined)
+    return CombinedDataset(path=output_path, table=combined, imputation_report=imputation_report)

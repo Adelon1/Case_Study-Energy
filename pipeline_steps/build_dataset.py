@@ -5,6 +5,12 @@ Example:
       --datasets day_ahead_prices load_forecast solar_forecast wind_onshore_forecast wind_offshore_forecast \
       --start 01-05-2026 \
       --end 02-05-2026
+    
+    .venv/bin/python pipeline_steps/build_dataset.py \   
+      --mode modelling \                                                                    
+      --datasets day_ahead_prices load_forecast solar_forecast wind_onshore_forecast wind_offshore_forecast \
+      --start 01-01-2021 \    
+      --end 01-01-2026         
 
 Each run creates matching folders:
 
@@ -27,7 +33,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from pipeline_helpers.entsoe_data import constants  # noqa: E402
-from pipeline_helpers.entsoe_data.combine_dataset_csvs import write_combined_dataset  # noqa: E402
+from pipeline_helpers.entsoe_data.combine_dataset_csvs import (  # noqa: E402
+    ImputationReport,
+    write_combined_dataset,
+)
 from pipeline_helpers.entsoe_data.build_features import write_feature_dataset  # noqa: E402
 from pipeline_helpers.entsoe_data.date_windows import (  # noqa: E402
     parse_local_date_window,
@@ -143,6 +152,7 @@ def write_qa_report(
     date_window,
     interim_folder: Path,
     processed_csv_path: Path,
+    imputation_report: ImputationReport,
 ) -> Path:
     """Write the required public data ingestion and QA report."""
 
@@ -181,6 +191,28 @@ def write_qa_report(
     missing_rows = [[column, missing_counts.get(column, 0)] for column in data_columns]
     outlier_rows = [[column, outlier_counts.get(column, 0)] for column in data_columns]
     frequency_rows = [[dataset, input_frequencies[dataset]] for dataset in datasets]
+    imputation_rows = [
+        [
+            column,
+            imputation_report.missing_before.get(column, 0),
+            imputation_report.filled_from_previous_day.get(column, 0),
+            imputation_report.missing_after_fill.get(column, 0),
+        ]
+        for column in imputation_report.columns
+    ]
+    imputation_table = (
+        markdown_table(
+            [
+                "Column",
+                "Missing before fill",
+                "Filled from t-24h",
+                "Missing after fill",
+            ],
+            imputation_rows,
+        )
+        if imputation_rows
+        else "No forecast driver columns requiring imputation were included in this run."
+    )
 
     report = f"""# Data Ingestion and QA Report
 
@@ -215,6 +247,16 @@ def write_qa_report(
 ## Missing Data
 
 {markdown_table(["Column", "Missing values"], missing_rows)}
+
+## Leakage-Safe Imputation
+
+- Applied after hourly assembly and before feature generation.
+- Columns considered: `{imputation_report.columns}`
+- Fill rule: a missing value at time `t` is filled from the same column at `t - 24h`.
+- The pipeline does not use future values, interpolation across future points, or backfill.
+- Rows dropped after the fill because forecast driver values were still missing: `{imputation_report.dropped_rows_after_fill}`
+
+{imputation_table}
 
 ## Obvious Outlier Checks
 
@@ -307,6 +349,7 @@ def main() -> None:
         date_window,
         folders.interim,
         combined.path,
+        combined.imputation_report,
     )
     feature_dataset = write_feature_dataset(
         combined.path,
