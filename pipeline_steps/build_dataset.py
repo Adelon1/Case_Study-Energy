@@ -1,16 +1,12 @@
 """Pipeline step: download XMLs, parse CSVs, and combine them into one dataset.
 
 Example:
-    .venv/bin/python pipeline_steps/build_dataset.py \
-      --datasets day_ahead_prices load_forecast solar_forecast wind_onshore_forecast wind_offshore_forecast \
-      --start 01-05-2026 \
-      --end 02-05-2026
-    
-    .venv/bin/python pipeline_steps/build_dataset.py \   
-      --mode modelling \                                                                    
-      --datasets day_ahead_prices load_forecast solar_forecast wind_onshore_forecast wind_offshore_forecast \
-      --start 01-01-2021 \    
-      --end 01-01-2026         
+    .venv/bin/python pipeline_steps/build_dataset.py --interactive
+
+    .venv/bin/python pipeline_steps/build_dataset.py --mode modelling
+    --datasets day_ahead_prices load_forecast solar_forecast
+    wind_onshore_forecast wind_offshore_forecast --start 01-01-2021
+    --end 01-01-2026
 
 Each run creates matching folders:
 
@@ -51,21 +47,22 @@ def parse_command_line_arguments() -> argparse.Namespace:
     """Read requested datasets and time range from the command line."""
 
     parser = argparse.ArgumentParser(description="Build a joined ENTSO-E model dataset.")
+    parser.add_argument("--interactive", action="store_true", help="Ask for settings interactively.")
     parser.add_argument(
         "--datasets",
         nargs="+",
-        required=True,
+        default=None,
         choices=sorted(constants.ENTSOE_DATASETS),
         help="Dataset names to download, parse, and combine.",
     )
     parser.add_argument(
         "--start",
-        required=True,
+        default=None,
         help="Start delivery date in German local time, format DD-MM-YYYY.",
     )
     parser.add_argument(
         "--end",
-        required=True,
+        default=None,
         help="Exclusive end delivery date in German local time, format DD-MM-YYYY.",
     )
     parser.add_argument(
@@ -76,6 +73,81 @@ def parse_command_line_arguments() -> argparse.Namespace:
     )
     parser.add_argument("--env", default=".env", help="Path to the local .env file.")
     return parser.parse_args()
+
+
+def ask(prompt: str, default: str | None = None) -> str:
+    """Ask for one interactive value."""
+
+    suffix = f" [{default}]" if default is not None else ""
+    value = input(f"{prompt}{suffix}: ").strip()
+    return value or (default or "")
+
+
+def ask_choice(prompt: str, choices: list[str], default: str) -> str:
+    """Ask until the response is one of the allowed choices."""
+
+    choices_text = ", ".join(choices)
+    while True:
+        answer = ask(f"{prompt} ({choices_text})", default)
+        if answer in choices:
+            return answer
+        print(f"Please choose one of: {choices_text}")
+
+
+def ask_dataset_list(default: list[str]) -> list[str]:
+    """Ask for a whitespace-separated dataset list and validate the names."""
+
+    choices = sorted(constants.ENTSOE_DATASETS)
+    default_text = " ".join(default)
+    print("Available datasets:")
+    for dataset in choices:
+        print(f"  - {dataset}")
+
+    while True:
+        answer = ask("Datasets separated by spaces", default_text)
+        datasets = answer.split()
+        invalid = [dataset for dataset in datasets if dataset not in constants.ENTSOE_DATASETS]
+        if datasets and not invalid:
+            return datasets
+        if invalid:
+            print(f"Unknown dataset(s): {', '.join(invalid)}")
+        else:
+            print("Please enter at least one dataset.")
+
+
+def apply_interactive_settings(args: argparse.Namespace) -> argparse.Namespace:
+    """Fill dataset-building settings interactively."""
+
+    default_datasets = args.datasets or [
+        "day_ahead_prices",
+        "load_forecast",
+        "solar_forecast",
+        "wind_onshore_forecast",
+        "wind_offshore_forecast",
+    ]
+    args.datasets = ask_dataset_list(default_datasets)
+    args.start = ask("Start delivery date DD-MM-YYYY", args.start or "01-01-2021")
+    args.end = ask("Exclusive end delivery date DD-MM-YYYY", args.end or "01-01-2026")
+    args.mode = ask_choice("Folder mode", ["test", "modelling"], args.mode)
+    args.env = ask("Env file", args.env)
+    return args
+
+
+def validate_required_arguments(args: argparse.Namespace) -> None:
+    """Make non-interactive runs fail with a clear message when inputs are missing."""
+
+    missing = []
+    if not args.datasets:
+        missing.append("--datasets")
+    if not args.start:
+        missing.append("--start")
+    if not args.end:
+        missing.append("--end")
+    if missing:
+        raise ValueError(
+            "Missing required argument(s): "
+            f"{', '.join(missing)}. Use --interactive to answer prompts instead."
+        )
 
 
 def expected_hourly_rows(start_utc: pd.Timestamp, end_utc: pd.Timestamp) -> int:
@@ -297,6 +369,9 @@ def main() -> None:
 
     started_at = time.perf_counter()
     args = parse_command_line_arguments()
+    if args.interactive:
+        args = apply_interactive_settings(args)
+    validate_required_arguments(args)
     date_window = parse_local_date_window(args.start, args.end)
     date_chunks = split_local_date_window_into_months(args.start, args.end)
     folders = create_folders_for_mode(args.mode, args.start, args.end)
