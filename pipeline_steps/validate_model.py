@@ -280,6 +280,9 @@ def prediction_coverage_diagnostics(metrics: pd.DataFrame) -> pd.DataFrame:
         "n_test_rows",
         "n_predicted_rows",
         "prediction_coverage",
+        "train_seconds",
+        "predict_seconds",
+        "total_seconds",
     ]
     return metrics[[column for column in columns if column in metrics.columns]].copy()
 

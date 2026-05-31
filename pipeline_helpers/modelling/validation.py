@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -257,8 +258,13 @@ def train_predict_window(
     if feature_columns is not None:
         model_params["_feature_columns"] = feature_columns
 
+    train_started = time.perf_counter()
     model_state = model_module.train(train_data, model_params)
+    train_seconds = time.perf_counter() - train_started
+
+    predict_started = time.perf_counter()
     y_pred = model_module.predict(model_state, test_data, model_params)
+    predict_seconds = time.perf_counter() - predict_started
     y_true = test_data[constants.TARGET_COLUMN]
     metrics = calculate_metrics(y_true, y_pred)
     n_test_rows = len(test_data)
@@ -277,6 +283,9 @@ def train_predict_window(
         "n_test_rows": n_test_rows,
         "n_predicted_rows": n_predicted_rows,
         "prediction_coverage": prediction_coverage,
+        "train_seconds": train_seconds,
+        "predict_seconds": predict_seconds,
+        "total_seconds": train_seconds + predict_seconds,
         **metrics,
     }
 
