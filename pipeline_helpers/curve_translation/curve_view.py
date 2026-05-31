@@ -209,11 +209,25 @@ def build_curve_view(
     if period_predictions.empty:
         raise ValueError("Prediction file has no rows for the requested period.")
 
-    block_values = calculate_block_values(period_predictions)
     if block not in {"baseload", "peakload", "offpeak", "peak_base_spread"}:
         raise ValueError(f"Unsupported block: {block}")
 
-    forecast_value = float(getattr(block_values, block))
+    if (
+        "prediction_granularity" in period_predictions.columns
+        and (period_predictions["prediction_granularity"] == "period_average").all()
+    ):
+        if "block" in period_predictions.columns and not period_predictions["block"].eq(block).all():
+            raise ValueError(
+                "Period-average predictions were built for a different block. "
+                "Rerun prediction for the selected block."
+            )
+        forecast_value = float(period_predictions["y_pred"].dropna().mean())
+        prediction_coverage = float(period_predictions["y_pred"].notna().mean())
+    else:
+        block_values = calculate_block_values(period_predictions)
+        forecast_value = float(getattr(block_values, block))
+        prediction_coverage = block_values.predicted_row_count / block_values.row_count
+
     benchmark = build_benchmark(
         benchmark_method,
         feature_table,
@@ -227,7 +241,6 @@ def build_curve_view(
     risk_buffer = max(mae, constants.TAIL_RISK_WEIGHT * tail_metric_value)
     confidence_score = edge / risk_buffer if risk_buffer else float("nan")
     signal = choose_signal(confidence_score)
-    prediction_coverage = block_values.predicted_row_count / block_values.row_count
 
     return CurveView(
         period_start_utc=str(period.start_utc),

@@ -136,7 +136,12 @@ def add_calendar_features(table: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_price_lag_features(table: pd.DataFrame) -> pd.DataFrame:
-    """Add leakage-safe price lag and rolling-price features."""
+    """Add price lag and rolling-price features.
+
+    Rolling price features are shifted by 24 hours, not 1 hour. This means a
+    full-day day-ahead forecast never uses actual prices from another hour of
+    the delivery day.
+    """
 
     features = table.copy()
     if PRICE_COLUMN not in features.columns:
@@ -146,8 +151,10 @@ def add_price_lag_features(table: pd.DataFrame) -> pd.DataFrame:
     features["price_lag_24"] = price.shift(24)
     features["price_lag_48"] = price.shift(48)
     features["price_lag_168"] = price.shift(168)
+    features["price_lag_336"] = price.shift(336)
+    features["price_lag_720"] = price.shift(720)
 
-    shifted_price = price.shift(1)
+    shifted_price = price.shift(24)
     features["price_rolling_mean_24"] = shifted_price.rolling(24).mean()
     features["price_rolling_std_24"] = shifted_price.rolling(24).std()
     features["price_rolling_mean_168"] = shifted_price.rolling(168).mean()

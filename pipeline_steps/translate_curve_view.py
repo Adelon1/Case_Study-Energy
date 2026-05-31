@@ -34,7 +34,7 @@ from pipeline_helpers.curve_translation.curve_view import (  # noqa: E402
     write_curve_view_outputs,
 )
 from pipeline_helpers.curve_translation.forecast_blocks import parse_utc_period  # noqa: E402
-from pipeline_helpers.curve_translation.model_registry import (  # noqa: E402
+from pipeline_helpers.modelling.period_prediction import (  # noqa: E402
     build_model_options,
     get_or_create_predictions,
 )
@@ -50,6 +50,24 @@ def parse_command_line_arguments() -> argparse.Namespace:
     parser.add_argument("--interactive", action="store_true", help="Ask for settings interactively.")
     parser.add_argument("--features", default=DEFAULT_FEATURES, help="Path to germany_model_features.csv.")
     parser.add_argument("--model", default=constants.DEFAULT_MODEL, help="Model module name.")
+    parser.add_argument(
+        "--target-option",
+        choices=["A", "B"],
+        default="A",
+        help="Option A aggregates hourly predictions; Option B predicts period average directly.",
+    )
+    parser.add_argument(
+        "--feature-mode",
+        choices=["day_ahead_full", "period_hourly_safe", "fundamentals_calendar_only"],
+        default="period_hourly_safe",
+        help="Feature mode used when target option A needs retraining.",
+    )
+    parser.add_argument(
+        "--period-days",
+        type=int,
+        default=None,
+        help="Period length in days for feature rules. Defaults to end-start.",
+    )
     parser.add_argument(
         "--regularization",
         choices=["lasso", "elasticnet", "ridge"],
@@ -86,7 +104,7 @@ def parse_command_line_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--output-base-folder",
         default=None,
-        help="Base folder containing model outputs. Defaults to the feature CSV folder.",
+        help="Base folder containing model outputs. Defaults to models/<dataset-name>.",
     )
     parser.add_argument(
         "--output-folder",
@@ -130,6 +148,13 @@ def apply_interactive_settings(args: argparse.Namespace) -> argparse.Namespace:
 
     args.features = ask("Feature CSV", args.features)
     args.model = ask("Model", args.model)
+    args.target_option = ask_choice("Target option", ["A", "B"], args.target_option)
+    if args.target_option == "A":
+        args.feature_mode = ask_choice(
+            "Feature mode",
+            ["day_ahead_full", "period_hourly_safe", "fundamentals_calendar_only"],
+            args.feature_mode,
+        )
     if args.model == "lear_model":
         args.regularization = ask_choice(
             "Regularization",
@@ -143,6 +168,19 @@ def apply_interactive_settings(args: argparse.Namespace) -> argparse.Namespace:
     )
     args.start = ask("Delivery start date DD-MM-YYYY", args.start)
     args.end = ask("Exclusive delivery end date DD-MM-YYYY", args.end)
+    period_days_default = args.period_days
+    if period_days_default is None and args.start and args.end:
+        period_days_default = max(
+            1,
+            int(
+                (
+                    pd.to_datetime(args.end, format="%d-%m-%Y")
+                    - pd.to_datetime(args.start, format="%d-%m-%Y")
+                )
+                / pd.Timedelta(days=1)
+            ),
+        )
+    args.period_days = int(ask("Period length in days", str(period_days_default or 1)))
     args.block = ask_choice(
         "Block",
         ["baseload", "peakload", "offpeak", "peak_base_spread", "all"],
@@ -213,6 +251,8 @@ def main() -> None:
         raise ValueError("Delivery --start and --end are required unless provided interactively.")
 
     period = parse_utc_period(parse_delivery_date(args.start), parse_delivery_date(args.end))
+    if args.period_days is None:
+        args.period_days = max(1, int((period.end_utc - period.start_utc) / pd.Timedelta(days=1)))
     selected_blocks = normalize_blocks(args.block)
     model_options = build_model_options(args.regularization, args.target_transform)
     prediction_source = get_or_create_predictions(
@@ -222,6 +262,10 @@ def main() -> None:
         period=period,
         output_base_folder=args.output_base_folder,
         force_retrain=args.force_retrain,
+        target_option=args.target_option,
+        feature_mode=args.feature_mode,
+        period_days=args.period_days,
+        block=selected_blocks[0],
     )
 
     predictions = pd.read_csv(prediction_source.predictions_path)
@@ -234,7 +278,11 @@ def main() -> None:
     output_base_folder = (
         Path(args.output_folder)
         if args.output_folder
-        else prediction_source.model_folder / "curve_translation" / f"{period.start_utc:%Y%m%d}_{period.end_utc:%Y%m%d}"
+        else Path("outputs")
+        / "curve_translation"
+        / Path(args.features).resolve().parent.name
+        / prediction_source.model_folder.name
+        / f"{period.start_utc:%Y%m%d}_{period.end_utc:%Y%m%d}"
     )
 
     for block in selected_blocks:

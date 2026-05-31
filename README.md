@@ -53,7 +53,33 @@ Validate the selected LEAR-style model:
   --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
   --model lear_model \
   --regularization lasso \
+  --target-transform raw \
+  --target-option A \
+  --feature-mode day_ahead_full
+```
+
+Predict one delivery day as a 24-hour vector:
+
+```bash
+.venv/bin/python pipeline_steps/predict_day_ahead.py \
+  --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
+  --delivery-day 01-12-2025 \
+  --model lear_model \
+  --regularization lasso \
   --target-transform raw
+```
+
+Validate a direct period-average model, Option B:
+
+```bash
+.venv/bin/python pipeline_steps/validate_model.py \
+  --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
+  --model lear_model \
+  --regularization lasso \
+  --target-transform raw \
+  --target-option B \
+  --period-days 30 \
+  --block baseload
 ```
 
 Translate a forecast period into curve views:
@@ -66,6 +92,8 @@ Translate a forecast period into curve views:
   --model lear_model \
   --regularization lasso \
   --target-transform raw \
+  --target-option A \
+  --feature-mode period_hourly_safe \
   --block all \
   --benchmark trailing_average
 ```
@@ -74,7 +102,7 @@ Generate AI commentary for one curve view:
 
 ```bash
 .venv/bin/python pipeline_steps/generate_ai_commentary.py \
-  --summary data/processed/germany_modelling_2021_2026/lear_model_lasso_raw/curve_translation/20251101_20251201/baseload/curve_view_summary.csv
+  --summary outputs/curve_translation/germany_modelling_2021_2026/<model-run>/20251101_20251201/baseload/curve_view_summary.csv
 ```
 
 ## Main Outputs
@@ -82,6 +110,8 @@ Generate AI commentary for one curve view:
 - `data/processed/.../germany_model_dataset.csv`: clean hourly modelling dataset.
 - `data/processed/.../germany_model_features.csv`: feature table.
 - `data/processed/.../data_qa_report.md`: ingestion and data QA report.
+- `models/<dataset>/<model-run>/`: trained model artifacts and validation outputs.
+- `outputs/curve_translation/...`: prompt-curve reports and AI commentary logs.
 - `validation_summary.csv`: rolling validation averages by parameter setting.
 - `final_holdout_metrics.csv`: final holdout performance.
 - `*_prediction_diagnostics.csv`: coverage diagnostics.

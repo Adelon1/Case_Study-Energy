@@ -1,4 +1,4 @@
-"""Train a selected model on a rolling window and predict a requested period."""
+"""Find, train, save, and reuse predictions for requested delivery periods."""
 
 from __future__ import annotations
 
@@ -12,9 +12,18 @@ from pathlib import Path
 import joblib
 import pandas as pd
 
+from pipeline_helpers.curve_translation import constants as curve_constants
+from pipeline_helpers.curve_translation.forecast_blocks import DeliveryPeriod
 from pipeline_helpers.modelling import constants
-from pipeline_helpers.modelling.metrics import calculate_metrics
-from pipeline_helpers.modelling.validation import add_months, load_feature_data, slice_window
+from pipeline_helpers.modelling.model_io import default_models_base_folder
+from pipeline_helpers.modelling.modelling_dataset import build_modelling_dataset
+from pipeline_helpers.modelling.validation import (
+    TimeWindow,
+    add_months,
+    load_feature_data,
+    slice_window,
+    train_predict_window,
+)
 
 
 @dataclass(frozen=True)
@@ -35,10 +44,78 @@ class PeriodPredictionResult:
     metadata_path: Path
 
 
+@dataclass(frozen=True)
+class PredictionSource:
+    """Prediction file selected or produced for a requested period."""
+
+    predictions_path: Path
+    metrics_path: Path
+    model_folder: Path
+    source: str
+    retrained: bool
+
+
 def load_model_module(model_name: str):
     """Import a model module from ``pipeline_helpers.modelling``."""
 
     return importlib.import_module(f"pipeline_helpers.modelling.{model_name}")
+
+
+def output_folder_name(model_module, model_options: dict[str, object]) -> str:
+    """Return the model-specific output folder name."""
+
+    if hasattr(model_module, "output_folder_name"):
+        return model_module.output_folder_name(**model_options)
+    return model_module.MODEL_NAME
+
+
+def build_model_options(
+    regularization: str | None = None,
+    target_transform: str | None = None,
+) -> dict[str, object]:
+    """Build model options in the same style as the validation script."""
+
+    options: dict[str, object] = {}
+    if regularization is not None:
+        options["regularization"] = regularization
+    if target_transform is not None:
+        options["target_transform"] = target_transform
+    return options
+
+
+def model_folder_for(
+    feature_path: str | Path,
+    model_name: str,
+    model_options: dict[str, object],
+    output_base_folder: str | Path | None = None,
+    target_option: str = "A",
+    feature_mode: str = "period_hourly_safe",
+    period_days: int | None = None,
+    block: str = "baseload",
+) -> Path:
+    """Resolve the model artifact folder for the selected forecast setup."""
+
+    model_module = load_model_module(model_name)
+    base_folder = (
+        Path(output_base_folder)
+        if output_base_folder
+        else default_models_base_folder(feature_path)
+    )
+    name_parts = [
+        output_folder_name(model_module, model_options),
+        f"option_{target_option.lower()}",
+    ]
+    if target_option == "A":
+        name_parts.append(feature_mode)
+    else:
+        name_parts.append(f"{period_days or 'period'}d_{block}")
+    return base_folder / "__".join(name_parts)
+
+
+def as_prediction_period(period: DeliveryPeriod) -> PredictionPeriod:
+    """Convert a curve-translation period to a modelling prediction period."""
+
+    return PredictionPeriod(start_utc=period.start_utc, end_utc=period.end_utc)
 
 
 def period_slug(period: PredictionPeriod) -> str:
@@ -106,6 +183,12 @@ def prediction_file_covers(predictions_path: str | Path, period: PredictionPerio
     if predictions.empty or "timestamp_utc" not in predictions.columns:
         return False
     timestamps = pd.to_datetime(predictions["timestamp_utc"], utc=True)
+    if "period_end" in predictions.columns:
+        period_ends = pd.to_datetime(predictions["period_end"], utc=True)
+        return bool(
+            (timestamps.min() <= period.start_utc)
+            and (period_ends.max() >= period.end_utc)
+        )
     return bool(
         (timestamps.min() <= period.start_utc)
         and (timestamps.max() >= period.end_utc - pd.Timedelta(hours=1))
@@ -124,6 +207,11 @@ def check_prediction_coverage(
     period_predictions = predictions.loc[
         (timestamps >= period.start_utc) & (timestamps < period.end_utc)
     ]
+    if "period_end" in predictions.columns:
+        period_ends = pd.to_datetime(predictions["period_end"], utc=True)
+        period_predictions = predictions.loc[
+            (timestamps <= period.start_utc) & (period_ends >= period.end_utc)
+        ]
     if period_predictions.empty:
         raise ValueError("Prediction file covers dates but has no rows in the requested period.")
 
@@ -142,11 +230,26 @@ def train_and_predict_period(
     output_folder: str | Path,
     period: PredictionPeriod,
     train_months: int = constants.TRAIN_MONTHS,
+    target_option: str = "A",
+    feature_mode: str = "period_hourly_safe",
+    period_days: int | None = None,
+    block: str = "baseload",
 ) -> PeriodPredictionResult:
     """Train on the previous rolling window and predict the requested period."""
 
     model_module = load_model_module(model_name)
-    table = load_feature_data(feature_path)
+    feature_table = load_feature_data(feature_path)
+    if period_days is None:
+        period_days = max(1, int((period.end_utc - period.start_utc) / pd.Timedelta(days=1)))
+    modelling_dataset = build_modelling_dataset(
+        feature_table=feature_table,
+        model_name=model_module.MODEL_NAME,
+        target_option=target_option,
+        feature_mode=feature_mode,
+        period_days=period_days,
+        block=block,
+    )
+    table = modelling_dataset.table
     train_begin = add_months(period.start_utc, -train_months)
     train_end = period.start_utc
 
@@ -166,10 +269,20 @@ def train_and_predict_period(
 
     output_folder = Path(output_folder)
     best_params = read_best_params(output_folder, model_module, model_options)
-    model_state = model_module.train(train_data, best_params)
-    y_pred = model_module.predict(model_state, test_data, best_params)
-    y_true = test_data[constants.TARGET_COLUMN]
-    metrics = calculate_metrics(y_true, y_pred)
+    prediction_result = train_predict_window(
+        table=table,
+        model_module=model_module,
+        params=best_params,
+        window=TimeWindow(
+            train_begin=train_begin,
+            train_end=train_end,
+            test_begin=period.start_utc,
+            test_end=period.end_utc,
+        ),
+        split_name="period_prediction",
+        fold_number=1,
+        feature_columns=modelling_dataset.feature_columns,
+    )
 
     period_folder = output_folder / "period_predictions" / period_slug(period)
     period_folder.mkdir(parents=True, exist_ok=True)
@@ -179,31 +292,33 @@ def train_and_predict_period(
     model_path = period_folder / "model.joblib"
     metadata_path = period_folder / "metadata.json"
 
-    predictions = pd.DataFrame(
-        {
-            constants.TIMESTAMP_COLUMN: test_data[constants.TIMESTAMP_COLUMN],
-            "model": model_module.MODEL_NAME,
-            "params": json.dumps(best_params, sort_keys=True),
-            "split": "period_prediction",
-            "fold": 1,
-            "y_true": y_true,
-            "y_pred": y_pred,
-        }
-    )
+    predictions = prediction_result.predictions
+    if target_option == "B" and "period_end" in test_data.columns:
+        predictions["period_end"] = test_data["period_end"]
+        predictions["prediction_granularity"] = "period_average"
+        predictions["block"] = block
+    else:
+        predictions["prediction_granularity"] = "hourly"
+        predictions["block"] = block
     predictions.to_csv(predictions_path, index=False)
-    pd.DataFrame([{**metrics}]).round(2).to_csv(metrics_path, index=False)
-    joblib.dump(model_state, model_path)
+    pd.DataFrame([prediction_result.metric_row]).round(2).to_csv(metrics_path, index=False)
+    joblib.dump(prediction_result.model_state, model_path)
     write_json(
         {
             "model": model_module.MODEL_NAME,
             "model_options": model_options,
             "params": best_params,
             "feature_csv": str(feature_path),
+            "target_option": target_option,
+            "feature_mode": modelling_dataset.feature_mode,
+            "period_days": period_days,
+            "block": block,
+            "feature_columns": modelling_dataset.feature_columns,
             "train_begin": train_begin,
             "train_end": train_end,
             "prediction_begin": period.start_utc,
             "prediction_end": period.end_utc,
-            "training_diagnostics": model_state_diagnostics(model_state),
+            "training_diagnostics": model_state_diagnostics(prediction_result.model_state),
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
         },
         metadata_path,
@@ -214,4 +329,95 @@ def train_and_predict_period(
         metrics_path=metrics_path,
         model_path=model_path,
         metadata_path=metadata_path,
+    )
+
+
+def get_or_create_predictions(
+    feature_path: str | Path,
+    model_name: str,
+    model_options: dict[str, object],
+    period: DeliveryPeriod,
+    output_base_folder: str | Path | None = None,
+    force_retrain: bool = False,
+    target_option: str = "A",
+    feature_mode: str = "period_hourly_safe",
+    period_days: int | None = None,
+    block: str = "baseload",
+) -> PredictionSource:
+    """Use existing period/final predictions, otherwise train for the requested period."""
+
+    if period_days is None:
+        period_days = max(1, int((period.end_utc - period.start_utc) / pd.Timedelta(days=1)))
+
+    model_folder = model_folder_for(
+        feature_path=feature_path,
+        model_name=model_name,
+        model_options=model_options,
+        output_base_folder=output_base_folder,
+        target_option=target_option,
+        feature_mode=feature_mode,
+        period_days=period_days,
+        block=block,
+    )
+    modelling_period = as_prediction_period(period)
+    period_folder = model_folder / "period_predictions" / period_slug(modelling_period)
+    period_predictions_path = period_folder / "predictions.csv"
+    period_metrics_path = period_folder / "metrics.csv"
+
+    if not force_retrain and prediction_file_covers(period_predictions_path, modelling_period):
+        if not period_metrics_path.exists():
+            raise ValueError(f"Missing metrics file: {period_metrics_path}")
+        check_prediction_coverage(
+            period_predictions_path,
+            modelling_period,
+            curve_constants.MIN_PREDICTION_COVERAGE,
+        )
+        return PredictionSource(
+            predictions_path=period_predictions_path,
+            metrics_path=period_metrics_path,
+            model_folder=model_folder,
+            source="existing_period_predictions",
+            retrained=False,
+        )
+
+    final_predictions_path = model_folder / "final_holdout_predictions.csv"
+    final_metrics_path = model_folder / "final_holdout_metrics.csv"
+    if not force_retrain and prediction_file_covers(final_predictions_path, modelling_period):
+        if not final_metrics_path.exists():
+            raise ValueError(f"Missing metrics file: {final_metrics_path}")
+        check_prediction_coverage(
+            final_predictions_path,
+            modelling_period,
+            curve_constants.MIN_PREDICTION_COVERAGE,
+        )
+        return PredictionSource(
+            predictions_path=final_predictions_path,
+            metrics_path=final_metrics_path,
+            model_folder=model_folder,
+            source="existing_final_holdout_predictions",
+            retrained=False,
+        )
+
+    period_result = train_and_predict_period(
+        feature_path=feature_path,
+        model_name=model_name,
+        model_options=model_options,
+        output_folder=model_folder,
+        period=modelling_period,
+        target_option=target_option,
+        feature_mode=feature_mode,
+        period_days=period_days,
+        block=block,
+    )
+    check_prediction_coverage(
+        period_result.predictions_path,
+        modelling_period,
+        curve_constants.MIN_PREDICTION_COVERAGE,
+    )
+    return PredictionSource(
+        predictions_path=period_result.predictions_path,
+        metrics_path=period_result.metrics_path,
+        model_folder=model_folder,
+        source="retrained_rolling_window",
+        retrained=True,
     )

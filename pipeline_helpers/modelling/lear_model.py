@@ -16,6 +16,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from pipeline_helpers.modelling import constants
+from pipeline_helpers.modelling.feature_sets import get_hourly_feature_columns
 
 
 MODEL_NAME = "lear_model"
@@ -23,55 +24,13 @@ HOUR_MODEL_COLUMN = "local_hour"
 SUPPORTED_REGULARIZATION = {"lasso", "elasticnet", "ridge"}
 SUPPORTED_TARGET_TRANSFORMS = {"raw", "asinh"}
 
-FEATURE_COLUMNS = [
-    "load_forecast_mw",
-    "solar_forecast_mw",
-    "wind_total_forecast_mw",
-    "residual_load_forecast_mw",
-    "wind_share_of_load",
-    "solar_share_of_load",
-    "renewable_share_of_load",
-    "local_is_weekend",
-    "local_hour_sin",
-    "local_hour_cos",
-    "local_weekday_sin",
-    "local_weekday_cos",
-    "local_month_sin",
-    "local_month_cos",
-    "local_day_of_year_sin",
-    "local_day_of_year_cos",
-    "price_lag_24",
-    "price_lag_48",
-    "price_lag_168",
-    "price_rolling_mean_24",
-    "price_rolling_std_24",
-    "price_rolling_mean_168",
-    "price_rolling_std_168",
-]
-
-FEATURE_COLUMNS.extend(f"local_weekday_{weekday}" for weekday in range(7))
-
-for day_lag in [1, 2, 3, 7]:
-    FEATURE_COLUMNS.extend(
-        f"price_d{day_lag}_h{hour:02d}"
-        for hour in range(24)
-    )
-
-for day_lag in [1, 7]:
-    FEATURE_COLUMNS.extend(
-        [
-            f"price_d{day_lag}_min",
-            f"price_d{day_lag}_max",
-            f"price_d{day_lag}_mean",
-        ]
-    )
-
 
 @dataclass(frozen=True)
 class LearModelState:
-    """Fitted hourly models and the feature columns they expect."""
+    """Fitted regularised models and the feature columns they expect."""
 
     hourly_models: dict[int, Pipeline]
+    pooled_model: Pipeline | None
     feature_columns: list[str]
     target_transform: str
     n_train_rows_by_hour: dict[int, int]
@@ -155,12 +114,19 @@ def inverse_transform_prediction(y_pred: np.ndarray, target_transform: str) -> n
     raise ValueError(f"Unsupported target transform: {target_transform}")
 
 
-def available_feature_columns(table: pd.DataFrame) -> list[str]:
-    """Return configured feature columns, failing loudly if any are missing."""
+def selected_feature_columns(train_data: pd.DataFrame, params: dict[str, object]) -> list[str]:
+    """Return externally selected features or the default day-ahead feature set."""
 
-    missing_columns = [
-        column for column in FEATURE_COLUMNS if column not in table.columns
-    ]
+    feature_columns = params.get("_feature_columns") or params.get("feature_columns")
+    if feature_columns is None:
+        feature_columns = get_hourly_feature_columns(
+            train_data,
+            model_name=MODEL_NAME,
+            feature_mode="day_ahead_full",
+            period_days=1,
+        )
+    feature_columns = list(feature_columns)
+    missing_columns = [column for column in feature_columns if column not in train_data.columns]
     if missing_columns:
         missing_preview = ", ".join(missing_columns[:10])
         if len(missing_columns) > 10:
@@ -169,7 +135,7 @@ def available_feature_columns(table: pd.DataFrame) -> list[str]:
             "Configured LEAR features are missing from the feature table: "
             f"{missing_preview}"
         )
-    return FEATURE_COLUMNS.copy()
+    return feature_columns
 
 
 def build_regressor(params: dict[str, object]):
@@ -194,14 +160,35 @@ def build_regressor(params: dict[str, object]):
 
 
 def train(train_data: pd.DataFrame, params: dict[str, object]) -> LearModelState:
-    """Fit one regularised regression per delivery hour."""
+    """Fit one regularised regression per hour, or one pooled model without hour rows."""
 
     target_transform = str(params["target_transform"])
-    feature_columns = available_feature_columns(train_data)
-    if HOUR_MODEL_COLUMN not in train_data.columns:
-        raise ValueError(f"LEAR needs hourly split column: {HOUR_MODEL_COLUMN}")
+    feature_columns = selected_feature_columns(train_data, params)
     if not feature_columns:
         raise ValueError("No configured LEAR feature columns are available.")
+
+    if HOUR_MODEL_COLUMN not in train_data.columns:
+        modelling_data = train_data.dropna(subset=[constants.TARGET_COLUMN, *feature_columns])
+        if modelling_data.empty:
+            raise ValueError("LEAR pooled model has no complete training rows.")
+        estimator = Pipeline(
+            [
+                ("scaler", StandardScaler()),
+                ("regressor", build_regressor(params)),
+            ]
+        )
+        estimator.fit(
+            modelling_data[feature_columns],
+            transform_target(modelling_data[constants.TARGET_COLUMN], target_transform),
+        )
+        return LearModelState(
+            hourly_models={},
+            pooled_model=estimator,
+            feature_columns=feature_columns,
+            target_transform=target_transform,
+            n_train_rows_by_hour={-1: len(modelling_data)},
+            fitted_hours=[],
+        )
 
     hourly_models: dict[int, Pipeline] = {}
     n_train_rows_by_hour: dict[int, int] = {}
@@ -229,6 +216,7 @@ def train(train_data: pd.DataFrame, params: dict[str, object]) -> LearModelState
 
     return LearModelState(
         hourly_models=hourly_models,
+        pooled_model=None,
         feature_columns=feature_columns,
         target_transform=target_transform,
         n_train_rows_by_hour=n_train_rows_by_hour,
@@ -244,6 +232,19 @@ def predict(
     """Predict each test row with the model fitted for its delivery hour."""
 
     predictions = pd.Series(index=test_data.index, dtype=float)
+    if model_state.pooled_model is not None:
+        complete_feature_mask = test_data[model_state.feature_columns].notna().all(axis=1)
+        if complete_feature_mask.any():
+            prediction_index = test_data.loc[complete_feature_mask].index
+            transformed_prediction = model_state.pooled_model.predict(
+                test_data.loc[prediction_index, model_state.feature_columns]
+            )
+            predictions.loc[prediction_index] = inverse_transform_prediction(
+                transformed_prediction,
+                model_state.target_transform,
+            )
+        return predictions
+
     if HOUR_MODEL_COLUMN not in test_data.columns:
         raise ValueError(f"LEAR needs hourly split column: {HOUR_MODEL_COLUMN}")
 

@@ -9,60 +9,11 @@ import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
 
 from pipeline_helpers.modelling import constants
+from pipeline_helpers.modelling.feature_sets import get_hourly_feature_columns
 
 
 MODEL_NAME = "hist_gradient_boosting"
 SUPPORTED_TARGET_TRANSFORMS = {"raw", "asinh"}
-
-FEATURE_COLUMNS = [
-    "load_forecast_mw",
-    "solar_forecast_mw",
-    "wind_onshore_forecast_mw",
-    "wind_offshore_forecast_mw",
-    "wind_total_forecast_mw",
-    "renewable_total_forecast_mw",
-    "residual_load_forecast_mw",
-    "wind_share_of_load",
-    "solar_share_of_load",
-    "renewable_share_of_load",
-    "local_hour",
-    "local_weekday",
-    "local_month",
-    "local_day_of_year",
-    "local_is_weekend",
-    "local_hour_sin",
-    "local_hour_cos",
-    "local_weekday_sin",
-    "local_weekday_cos",
-    "local_month_sin",
-    "local_month_cos",
-    "local_day_of_year_sin",
-    "local_day_of_year_cos",
-    "price_lag_24",
-    "price_lag_48",
-    "price_lag_168",
-    "price_rolling_mean_24",
-    "price_rolling_std_24",
-    "price_rolling_mean_168",
-    "price_rolling_std_168",
-]
-
-FEATURE_COLUMNS.extend(f"local_weekday_{weekday}" for weekday in range(7))
-
-for day_lag in [1, 2, 3, 7]:
-    FEATURE_COLUMNS.extend(
-        f"price_d{day_lag}_h{hour:02d}"
-        for hour in range(24)
-    )
-
-for day_lag in [1, 7]:
-    FEATURE_COLUMNS.extend(
-        [
-            f"price_d{day_lag}_min",
-            f"price_d{day_lag}_max",
-            f"price_d{day_lag}_mean",
-        ]
-    )
 
 
 @dataclass(frozen=True)
@@ -161,12 +112,19 @@ def inverse_transform_prediction(y_pred: np.ndarray, target_transform: str) -> n
     raise ValueError(f"Unsupported target transform: {target_transform}")
 
 
-def available_feature_columns(table: pd.DataFrame) -> list[str]:
-    """Return configured feature columns, failing loudly if any are missing."""
+def selected_feature_columns(train_data: pd.DataFrame, params: dict[str, object]) -> list[str]:
+    """Return externally selected features or the default day-ahead feature set."""
 
-    missing_columns = [
-        column for column in FEATURE_COLUMNS if column not in table.columns
-    ]
+    feature_columns = params.get("_feature_columns") or params.get("feature_columns")
+    if feature_columns is None:
+        feature_columns = get_hourly_feature_columns(
+            train_data,
+            model_name=MODEL_NAME,
+            feature_mode="day_ahead_full",
+            period_days=1,
+        )
+    feature_columns = list(feature_columns)
+    missing_columns = [column for column in feature_columns if column not in train_data.columns]
     if missing_columns:
         missing_preview = ", ".join(missing_columns[:10])
         if len(missing_columns) > 10:
@@ -175,14 +133,14 @@ def available_feature_columns(table: pd.DataFrame) -> list[str]:
             "Configured boosted-tree features are missing from the feature table: "
             f"{missing_preview}"
         )
-    return FEATURE_COLUMNS.copy()
+    return feature_columns
 
 
 def train(train_data: pd.DataFrame, params: dict[str, object]) -> BoostedTreeModelState:
     """Fit one pooled nonlinear model across all delivery hours."""
 
     target_transform = str(params["target_transform"])
-    feature_columns = available_feature_columns(train_data)
+    feature_columns = selected_feature_columns(train_data, params)
     modelling_data = train_data.dropna(subset=[constants.TARGET_COLUMN])
     if modelling_data.empty:
         raise ValueError("Boosted-tree model has no training rows with a target value.")
