@@ -9,7 +9,7 @@ grounded commentary.
 
 The default workflow is a **daily rolling day-ahead forecast**: each delivery day is
 forecast from information known *before* the auction (forecast load/wind/solar, recent
-daily price-curve shapes, rolling price statistics, calendar). It is not a one-shot
+daily price-curve shapes, calendar). It is not a one-shot
 forecast of future realised prices.
 
 The same code also supports a second target on request — a **period-average forecast**,
@@ -25,7 +25,7 @@ targets are selected with `--target hourly` (default) or `--target period_averag
 
 - ENTSO-E ingestion with raw → interim → processed data layout and a generated QA report.
 - Correct UTC/DST handling (UTC join key, local German calendar features, 24-column daily lags across 23/25-hour days).
-- Leakage-safe feature engineering (rolling price stats use `shift(24)`, not `shift(1)`).
+- Leakage-safe feature engineering with previous UTC daily price curves and local German calendar features.
 - Three models behind one interface: seasonal-lag baseline, **LEAR-style 24-hour regularised ARX** (headline), and a histogram gradient-boosting benchmark.
 - Rolling-origin validation (24m train / 1m test / 1m step, 35 folds) with MAE, RMSE, bias, and tail/scarcity metrics.
 - Empirical **P10–P90 residual bands** per hour (validation coverage ≈ 80%).

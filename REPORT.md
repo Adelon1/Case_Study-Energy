@@ -216,12 +216,10 @@ must never peek at another hour of the same delivery day.
 1. **Fundamental features** — total wind (onshore + offshore), renewable total,
    residual load (load − solar − wind), and wind/solar/renewable shares of load. These
    encode the merit-order intuition that price is driven by *residual* load.
-2. **Calendar features** — local German hour, weekday, month, day-of-year, weekend and
+2. **Calendar features** — local German hour, weekday, month, day-of-year,
    holiday flags (German nationwide holidays via the `holidays` package), cyclic
    sine/cosine encodings, and weekday dummies. All row-wise, all DST-safe.
-3. **Rolling price statistics** — `price_rolling_mean_24/std_24` and
-   `price_rolling_mean_168/std_168`, all built from `price.shift(24)` (see below).
-4. **Daily UTC price-curve lags** — the full 24-hour price shapes from d-1, d-2, d-3,
+3. **Daily UTC price-curve lags** — the full 24-hour price shapes from d-1, d-2, d-3,
    and d-7, plus min/max/mean summaries for d-1 and d-7 only. This is the LEAR-style
    structure that captures intraday and weekly seasonality.
 
@@ -234,29 +232,10 @@ coefficients unstable without adding any information. Dropping the scalars keeps
 feature set honest and the LEAR weights well-posed; the same lagged information is still
 present, hour-by-hour, in the price-curve block.
 
-Before any of the shift-based features are built, `reindex_to_full_hourly_grid`
-re-inserts any hours the combine stage dropped as empty rows, so the table sits on a
-gap-free hourly UTC clock. This matters for correctness: once a row is missing,
-`shift(n)` no longer means "`n` hours ago" and every price lag and rolling window would
-silently misalign. The empty filler rows are removed again by the final `dropna` on the
+`reindex_to_full_hourly_grid` re-inserts any hours the combine stage dropped as empty
+rows, so the table sits on a gap-free hourly UTC clock before lagged daily price curves
+are constructed. The empty filler rows are removed again by the final `dropna` on the
 required columns, so they never reach the model.
-
-**The leakage fix that matters most.** Rolling price statistics are computed from
-`price.shift(24)`, not `price.shift(1)`:
-
-```python
-shifted_price = price.shift(24)
-features["price_rolling_mean_24"]  = shifted_price.rolling(24).mean()
-features["price_rolling_std_24"]   = shifted_price.rolling(24).std()
-features["price_rolling_mean_168"] = shifted_price.rolling(168).mean()
-features["price_rolling_std_168"]  = shifted_price.rolling(168).std()
-```
-
-With `shift(1)`, hour 23 of a delivery day would indirectly use hour 22 of the *same*
-delivery day through the rolling window — invisible leakage that inflates accuracy.
-`shift(24)` guarantees every rolling feature is built only from prices that were known
-a full day before delivery. This is the practical embodiment of the information-cutoff
-discipline that Beran, Vogler & Weber and Lago et al. insist on.
 
 ### 5.1 From feature store to model-ready table (`modelling_dataset.py`)
 
@@ -575,7 +554,7 @@ value with its band, the benchmark and edge, the signal with its rationale, the
 **desk action** (e.g. "do not add directional exposure; monitor until the edge clears
 the risk buffer"), the model-error context (MAE + tail metric), and explicit
 **invalidation logic**: material load/wind/solar forecast revisions, outages or plant
-returns, flow disruptions, regime shifts, recent model error exceeding validation
+returns, flow disruptions, market-regime changes, recent model error exceeding validation
 error, or liquidity/execution constraints. Together these satisfy the Task-3
 requirements for a concrete signal, a trading interpretation, and invalidation rules.
 

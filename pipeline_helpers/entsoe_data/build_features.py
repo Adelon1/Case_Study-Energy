@@ -113,7 +113,6 @@ def add_calendar_features(table: pd.DataFrame) -> pd.DataFrame:
     features["local_weekday"] = timestamp_local.dt.weekday
     features["local_month"] = timestamp_local.dt.month
     features["local_day_of_year"] = timestamp_local.dt.dayofyear
-    features["local_is_weekend"] = features["local_weekday"].isin([5, 6]).astype(int)
     features["is_holiday"] = local_german_holiday_flag(timestamp_local)
 
     features["local_hour_sin"] = np.sin(2 * np.pi * features["local_hour"] / 24)
@@ -139,30 +138,6 @@ def add_calendar_features(table: pd.DataFrame) -> pd.DataFrame:
         column = f"local_weekday_{weekday}"
         if column not in features.columns:
             features[column] = 0
-
-    return features
-
-
-def add_rolling_price_features(table: pd.DataFrame) -> pd.DataFrame:
-    """Add rolling-price summary features.
-
-    The rolling windows are shifted by 24 hours, not 1 hour, so a full-day
-    day-ahead forecast never uses an actual price from another hour of the same
-    delivery day. Plain same-hour lags (yesterday, two days ago, last week) are
-    intentionally not added here: they are already provided exactly by the daily
-    price-curve columns ``price_dN_hHH`` and would be perfectly collinear.
-    """
-
-    features = table.copy()
-    if PRICE_COLUMN not in features.columns:
-        raise ValueError(f"Required target column missing: {PRICE_COLUMN}")
-
-    price = features[PRICE_COLUMN]
-    shifted_price = price.shift(24)
-    features["price_rolling_mean_24"] = shifted_price.rolling(24).mean()
-    features["price_rolling_std_24"] = shifted_price.rolling(24).std()
-    features["price_rolling_mean_168"] = shifted_price.rolling(168).mean()
-    features["price_rolling_std_168"] = shifted_price.rolling(168).std()
 
     return features
 
@@ -250,13 +225,10 @@ def build_feature_table(clean_hourly_dataset: pd.DataFrame) -> pd.DataFrame:
     features = reindex_to_full_hourly_grid(features)
     features = add_fundamental_features(features)
     features = add_calendar_features(features)
-    features = add_rolling_price_features(features)
     features = add_daily_price_curve_lag_features(features)
 
     required_columns = [
         PRICE_COLUMN,
-        "price_rolling_mean_24",
-        "price_rolling_mean_168",
         "price_d1_h00",
         "price_d2_h00",
         "price_d3_h00",

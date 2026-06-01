@@ -103,18 +103,6 @@ def day_ahead_price_features(table: pd.DataFrame) -> list[str]:
     """Price features valid when forecasting one whole delivery day ahead."""
 
     columns: list[str] = []
-    columns.extend(
-        existing_columns(
-            table,
-            [
-                "price_rolling_mean_24",
-                "price_rolling_std_24",
-                "price_rolling_mean_168",
-                "price_rolling_std_168",
-            ],
-        )
-    )
-
     for day_lag in DAILY_PRICE_CURVE_LAGS:
         columns.extend(
             existing_columns(table, [f"price_d{day_lag}_h{hour:02d}" for hour in range(24)])
