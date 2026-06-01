@@ -1,9 +1,9 @@
 """Pipeline step: download XMLs, parse CSVs, and combine them into one dataset.
 
 Example:
-    .venv/bin/python pipeline_steps/build_dataset.py --interactive
+    .venv/bin/python pipeline_steps/01_build_dataset.py --interactive
 
-    .venv/bin/python pipeline_steps/build_dataset.py --mode modelling
+    .venv/bin/python pipeline_steps/01_build_dataset.py --mode modelling
     --datasets day_ahead_prices load_forecast solar_forecast
     wind_onshore_forecast wind_offshore_forecast --start 01-01-2021
     --end 01-01-2026
@@ -162,7 +162,6 @@ def count_obvious_outliers(table: pd.DataFrame) -> dict[str, int]:
     rules = {
         "day_ahead_price_eur_per_mwh": lambda series: (series < -500) | (series > 1000),
         "load_forecast_mw": lambda series: (series <= 0) | (series > 120000),
-        "load_actual_mw": lambda series: (series <= 0) | (series > 120000),
         "solar_forecast_mw": lambda series: (series < 0) | (series > 90000),
         "wind_onshore_forecast_mw": lambda series: (series < 0) | (series > 90000),
         "wind_offshore_forecast_mw": lambda series: (series < 0) | (series > 30000),
@@ -337,7 +336,7 @@ Outlier checks are QA flags only; the pipeline does not remove values automatica
 Rules:
 
 - `day_ahead_price_eur_per_mwh`: below -500 or above 1000
-- `load_forecast_mw`, `load_actual_mw`: <= 0 or above 120000
+- `load_forecast_mw`: <= 0 or above 120000
 - `solar_forecast_mw`, `wind_onshore_forecast_mw`: below 0 or above 90000
 - `wind_offshore_forecast_mw`: below 0 or above 30000
 
@@ -376,21 +375,17 @@ def main() -> None:
     date_chunks = split_local_date_window_into_months(args.start, args.end)
     folders = create_folders_for_mode(args.mode, args.start, args.end)
 
-    print(f"Created run folders: {folders.name}")
-    print(f"  raw: {folders.raw}")
-    print(f"  interim: {folders.interim}")
-    print(f"  processed: {folders.processed}")
-    print("Requested German local delivery window:")
-    print(f"  local: {date_window.start_local} to {date_window.end_local}")
-    print(f"  UTC/API: {date_window.entsoe_start} to {date_window.entsoe_end}")
-    print(f"  API chunks: {len(date_chunks)} monthly chunk(s)")
+    print(f"Run folder: {folders.name}  ({args.mode} mode)")
+    print(f"  local window : {date_window.start_local} -> {date_window.end_local}")
+    print(f"  UTC window   : {date_window.entsoe_start} -> {date_window.entsoe_end}")
+    print(f"  datasets     : {len(args.datasets)} ({', '.join(args.datasets)})")
+    print(f"  API chunks   : {len(date_chunks)} monthly")
 
+    print("\nDownload and parse")
     for dataset in args.datasets:
         csv_path = folders.interim / f"{dataset}.csv"
         xml_paths: list[Path] = []
-
-        print(f"\nDownloading {dataset}...")
-        for index, chunk in enumerate(date_chunks, start=1):
+        for chunk in date_chunks:
             xml_path = (
                 folders.raw
                 / f"{dataset}_{chunk.entsoe_start}_{chunk.entsoe_end}.xml"
@@ -403,11 +398,8 @@ def main() -> None:
             )
             save_raw_xml_response(xml_text, xml_path)
             xml_paths.append(xml_path)
-            print(f"  chunk {index}/{len(date_chunks)} saved XML: {xml_path}")
-
-        print(f"Parsing {dataset}...")
         write_dataset_csv_from_xml_files(xml_paths, dataset, csv_path)
-        print(f"  saved CSV: {csv_path}")
+        print(f"  {dataset:<24} {len(date_chunks):>3} chunks -> {csv_path.name}")
 
     combined = write_combined_dataset(
         folders.interim,
@@ -430,10 +422,21 @@ def main() -> None:
         combined.path,
         folders.processed / "germany_model_features.csv",
     )
-    print(f"\nCombined dataset saved: {combined.path}")
-    print(f"Feature dataset saved: {feature_dataset.path}")
-    print(f"QA report saved: {report_path}")
-    print(f"Total runtime: {format_elapsed_time(time.perf_counter() - started_at)}")
+    expected_rows = expected_hourly_rows(date_window.start_utc, date_window.end_utc)
+    imputation = combined.imputation_report
+    print("\nAssemble")
+    print(f"  combined rows : {len(combined.table):,} / {expected_rows:,} expected")
+    print(
+        f"  imputed t-24h : {sum(imputation.filled_from_previous_day.values())}"
+        f"   dropped: {imputation.dropped_rows_after_fill}"
+    )
+    print(f"  feature rows  : {len(feature_dataset.table):,}")
+
+    print("\nOutputs")
+    print(f"  dataset  : {combined.path}")
+    print(f"  features : {feature_dataset.path}")
+    print(f"  QA report: {report_path}")
+    print(f"\nDone in {format_elapsed_time(time.perf_counter() - started_at)}")
 
 
 if __name__ == "__main__":

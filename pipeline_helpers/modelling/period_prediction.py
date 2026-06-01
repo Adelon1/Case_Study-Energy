@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 import warnings
 from dataclasses import dataclass
@@ -15,7 +14,12 @@ import pandas as pd
 from pipeline_helpers.curve_translation import constants as curve_constants
 from pipeline_helpers.curve_translation.forecast_blocks import DeliveryPeriod
 from pipeline_helpers.modelling import constants
-from pipeline_helpers.modelling.model_io import default_models_base_folder
+from pipeline_helpers.modelling.model_io import default_models_base_folder, read_json, write_json
+from pipeline_helpers.modelling.model_support import (
+    load_model_module,
+    model_run_name,
+    model_state_diagnostics,
+)
 from pipeline_helpers.modelling.modelling_dataset import build_modelling_dataset
 from pipeline_helpers.modelling.validation import (
     TimeWindow,
@@ -55,20 +59,6 @@ class PredictionSource:
     retrained: bool
 
 
-def load_model_module(model_name: str):
-    """Import a model module from ``pipeline_helpers.modelling``."""
-
-    return importlib.import_module(f"pipeline_helpers.modelling.{model_name}")
-
-
-def output_folder_name(model_module, model_options: dict[str, object]) -> str:
-    """Return the model-specific output folder name."""
-
-    if hasattr(model_module, "output_folder_name"):
-        return model_module.output_folder_name(**model_options)
-    return model_module.MODEL_NAME
-
-
 def build_model_options(
     regularization: str | None = None,
     target_transform: str | None = None,
@@ -88,7 +78,7 @@ def model_folder_for(
     model_name: str,
     model_options: dict[str, object],
     output_base_folder: str | Path | None = None,
-    target_option: str = "A",
+    target_option: str = "hourly",
     feature_mode: str = "period_hourly_safe",
     period_days: int | None = None,
     block: str = "baseload",
@@ -102,10 +92,10 @@ def model_folder_for(
         else default_models_base_folder(feature_path)
     )
     name_parts = [
-        output_folder_name(model_module, model_options),
-        f"option_{target_option.lower()}",
+        model_run_name(model_module, model_options),
+        target_option,
     ]
-    if target_option == "A":
+    if target_option == "hourly":
         name_parts.append(feature_mode)
     else:
         name_parts.append(f"{period_days or 'period'}d_{block}")
@@ -122,18 +112,6 @@ def period_slug(period: PredictionPeriod) -> str:
     """Build a stable file suffix for a delivery period."""
 
     return f"{period.start_utc:%Y%m%d}_{period.end_utc:%Y%m%d}"
-
-
-def write_json(data: dict[str, object], path: Path) -> None:
-    """Write JSON with stable formatting."""
-
-    path.write_text(json.dumps(data, indent=2, sort_keys=True, default=str), encoding="utf-8")
-
-
-def read_json(path: Path) -> dict[str, object]:
-    """Read a JSON object from disk."""
-
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def read_best_params(
@@ -154,23 +132,7 @@ def read_best_params(
         if "params" in summary.columns and not summary.empty:
             return json.loads(summary.iloc[0]["params"])
 
-    if hasattr(model_module, "build_param_grid"):
-        return model_module.build_param_grid(**model_options)[0]
-    if hasattr(model_module, "PARAM_GRID"):
-        return model_module.PARAM_GRID[0]
-    raise ValueError(
-        f"No best params found in {model_folder}. Run validation first or provide model artifacts."
-    )
-
-
-def model_state_diagnostics(model_state) -> dict[str, object]:
-    """Extract optional diagnostics from fitted model state objects."""
-
-    diagnostics: dict[str, object] = {}
-    for attribute in ["fitted_hours", "n_train_rows_by_hour", "feature_columns"]:
-        if hasattr(model_state, attribute):
-            diagnostics[attribute] = getattr(model_state, attribute)
-    return diagnostics
+    return model_module.build_param_grid(**model_options)[0]
 
 
 def prediction_file_covers(predictions_path: str | Path, period: PredictionPeriod) -> bool:
@@ -179,7 +141,7 @@ def prediction_file_covers(predictions_path: str | Path, period: PredictionPerio
     predictions_path = Path(predictions_path)
     if not predictions_path.exists():
         return False
-    predictions = pd.read_csv(predictions_path)
+    predictions = pd.read_csv(predictions_path, sep=None, engine="python")
     if predictions.empty or "timestamp_utc" not in predictions.columns:
         return False
     timestamps = pd.to_datetime(predictions["timestamp_utc"], utc=True)
@@ -202,7 +164,7 @@ def check_prediction_coverage(
 ) -> None:
     """Warn if a prediction file has low non-null coverage inside the requested period."""
 
-    predictions = pd.read_csv(predictions_path)
+    predictions = pd.read_csv(predictions_path, sep=None, engine="python")
     timestamps = pd.to_datetime(predictions["timestamp_utc"], utc=True)
     period_predictions = predictions.loc[
         (timestamps >= period.start_utc) & (timestamps < period.end_utc)
@@ -230,7 +192,7 @@ def train_and_predict_period(
     output_folder: str | Path,
     period: PredictionPeriod,
     train_months: int = constants.TRAIN_MONTHS,
-    target_option: str = "A",
+    target_option: str = "hourly",
     feature_mode: str = "period_hourly_safe",
     period_days: int | None = None,
     block: str = "baseload",
@@ -268,7 +230,13 @@ def train_and_predict_period(
         raise ValueError("Requested prediction period is empty in the feature table.")
 
     output_folder = Path(output_folder)
-    best_params = read_best_params(output_folder, model_module, model_options)
+    grid_options = {
+        **model_options,
+        "target_option": target_option,
+        "period_days": period_days,
+        "block": block,
+    }
+    best_params = read_best_params(output_folder, model_module, grid_options)
     prediction_result = train_predict_window(
         table=table,
         model_module=model_module,
@@ -282,6 +250,7 @@ def train_and_predict_period(
         split_name="period_prediction",
         fold_number=1,
         feature_columns=modelling_dataset.feature_columns,
+        target_column=modelling_dataset.target_column,
     )
 
     period_folder = output_folder / "period_predictions" / period_slug(period)
@@ -293,15 +262,18 @@ def train_and_predict_period(
     metadata_path = period_folder / "metadata.json"
 
     predictions = prediction_result.predictions
-    if target_option == "B" and "period_end" in test_data.columns:
+    if target_option == "period_average" and "period_end" in test_data.columns:
         predictions["period_end"] = test_data["period_end"]
         predictions["prediction_granularity"] = "period_average"
         predictions["block"] = block
     else:
         predictions["prediction_granularity"] = "hourly"
         predictions["block"] = block
-    predictions.to_csv(predictions_path, index=False)
-    pd.DataFrame([prediction_result.metric_row]).round(2).to_csv(metrics_path, index=False)
+    predictions.to_csv(predictions_path, index=False, sep=";")
+    metrics_frame = pd.DataFrame([prediction_result.metric_row])
+    numeric_columns = metrics_frame.select_dtypes("number").columns
+    metrics_frame[numeric_columns] = metrics_frame[numeric_columns].round(2)
+    metrics_frame.to_csv(metrics_path, index=False)
     joblib.dump(prediction_result.model_state, model_path)
     write_json(
         {
@@ -339,7 +311,7 @@ def get_or_create_predictions(
     period: DeliveryPeriod,
     output_base_folder: str | Path | None = None,
     force_retrain: bool = False,
-    target_option: str = "A",
+    target_option: str = "hourly",
     feature_mode: str = "period_hourly_safe",
     period_days: int | None = None,
     block: str = "baseload",
@@ -380,21 +352,21 @@ def get_or_create_predictions(
             retrained=False,
         )
 
-    final_predictions_path = model_folder / "final_holdout_predictions.csv"
-    final_metrics_path = model_folder / "final_holdout_metrics.csv"
-    if not force_retrain and prediction_file_covers(final_predictions_path, modelling_period):
-        if not final_metrics_path.exists():
-            raise ValueError(f"Missing metrics file: {final_metrics_path}")
+    validation_predictions_path = model_folder / "predictions.csv"
+    validation_metrics_path = model_folder / "validation_summary.csv"
+    if not force_retrain and prediction_file_covers(validation_predictions_path, modelling_period):
+        if not validation_metrics_path.exists():
+            raise ValueError(f"Missing metrics file: {validation_metrics_path}")
         check_prediction_coverage(
-            final_predictions_path,
+            validation_predictions_path,
             modelling_period,
             curve_constants.MIN_PREDICTION_COVERAGE,
         )
         return PredictionSource(
-            predictions_path=final_predictions_path,
-            metrics_path=final_metrics_path,
+            predictions_path=validation_predictions_path,
+            metrics_path=validation_metrics_path,
             model_folder=model_folder,
-            source="existing_final_holdout_predictions",
+            source="existing_validation_predictions",
             retrained=False,
         )
 

@@ -140,8 +140,16 @@ def fill_missing_forecasts_from_previous_day(
 
     for column in columns:
         missing_mask = filled[column].isna()
-        filled[column] = filled[column].fillna(filled[column].shift(24))
-        filled_from_previous_day[column] = int((missing_mask & filled[column].notna()).sum())
+        series = filled[column]
+        # Repeated same-hour previous-day fill recovers multi-day outages while
+        # staying leakage-safe: a value at t only ever copies an older value at
+        # t - 24h, never a future one.
+        for _ in range(7):
+            if not series.isna().any():
+                break
+            series = series.fillna(series.shift(24))
+        filled[column] = series
+        filled_from_previous_day[column] = int((missing_mask & series.notna()).sum())
 
     missing_after_fill = filled[columns].isna().sum().astype(int).to_dict()
     rows_with_remaining_missing = filled[columns].isna().any(axis=1)

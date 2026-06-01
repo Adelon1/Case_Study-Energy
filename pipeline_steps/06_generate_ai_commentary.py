@@ -1,7 +1,7 @@
 """Pipeline step: generate logged AI commentary for a curve-view summary.
 
 Example:
-    .venv/bin/python pipeline_steps/generate_ai_commentary.py \
+    .venv/bin/python pipeline_steps/06_generate_ai_commentary.py \
       --summary data/processed/germany_modelling_2021_2026/lear_model_lasso_raw/curve_translation/20251101_20251201/baseload/curve_view_summary.csv
 
 The script calls an OpenAI model using ``OPENAI_API_KEY`` from ``.env`` or the
@@ -77,9 +77,9 @@ decision-focused.
 
 Explain:
 1. The selected delivery period and block.
-2. Forecast fair value versus benchmark.
-3. The risk-adjusted signal.
-4. How MAE and the provided tail metric affect confidence.
+2. Forecast fair value and its P10-P90 band versus the benchmark.
+3. The resulting long/short/neutral signal and how far the benchmark sits from the band.
+4. How MAE and the provided tail metric frame the model's reliability.
 5. What would invalidate the signal.
 
 Return Markdown only.
@@ -151,16 +151,18 @@ The LLM commentary call failed, so this deterministic fallback was generated fro
 - Block: `{summary.get("block")}`
 - Signal: **{summary.get("signal")}**
 - Forecast fair value: `{summary.get("forecast_fair_value")}` EUR/MWh
+- Forecast band: `{summary.get("forecast_low")}` to `{summary.get("forecast_high")}` EUR/MWh (`{summary.get("band_source")}`)
 - Benchmark method: `{summary.get("benchmark_method")}`
 - Benchmark value: `{summary.get("benchmark_value")}` EUR/MWh
-- Edge: `{summary.get("edge")}` EUR/MWh
+- Edge vs benchmark: `{summary.get("edge")}` EUR/MWh
+- Distance beyond band edge: `{summary.get("signal_margin")}` EUR/MWh
 - MAE: `{summary.get("mae")}` EUR/MWh
 - Tail metric: `{summary.get("tail_metric_name")}` = `{summary.get("tail_metric_value")}` EUR/MWh
-- Risk buffer: `{summary.get("risk_buffer")}` EUR/MWh
-- Confidence score: `{summary.get("confidence_score")}`
 - Prediction coverage: `{summary.get("prediction_coverage")}`
 
 Desk action: {summary.get("desk_action")}
+
+Decision rationale: {summary.get("decision_rationale")}
 
 Invalidation logic: {summary.get("invalidation_logic")}
 

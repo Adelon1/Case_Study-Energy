@@ -9,7 +9,9 @@ import pandas as pd
 
 from pipeline_helpers.curve_translation import constants
 from pipeline_helpers.curve_translation.forecast_blocks import (
+    BlockBand,
     DeliveryPeriod,
+    calculate_block_band,
     calculate_block_values,
     filter_delivery_period,
     peakload_mask,
@@ -28,23 +30,26 @@ class BenchmarkResult:
 
 @dataclass(frozen=True)
 class CurveView:
-    """Final prompt-curve trading view."""
+    """Final prompt-curve trading view for one delivery block."""
 
     period_start_utc: str
     period_end_utc: str
     block: str
     forecast_fair_value: float
+    forecast_low: float
+    forecast_high: float
+    band_source: str
     benchmark_method: str
     benchmark_value: float
     edge: float
+    signal: str
+    signal_margin: float
+    desk_action: str
+    decision_rationale: str
+    invalidation_logic: str
     mae: float
     tail_metric_name: str
     tail_metric_value: float
-    risk_buffer: float
-    confidence_score: float
-    signal: str
-    desk_action: str
-    invalidation_logic: str
     prediction_coverage: float
 
 
@@ -144,7 +149,7 @@ def build_benchmark(
 
 
 def read_metric_value(metrics_path: str | Path, column: str) -> float:
-    """Read one metric value from a validation or holdout metrics CSV."""
+    """Read one metric value from a metrics CSV."""
 
     metrics = pd.read_csv(metrics_path, sep=None, engine="python")
     if column not in metrics.columns:
@@ -159,18 +164,66 @@ def choose_tail_metric(edge: float, metrics_path: str | Path) -> tuple[str, floa
     return metric_name, read_metric_value(metrics_path, metric_name)
 
 
-def choose_signal(score: float) -> str:
-    """Map risk-adjusted edge into a trading signal."""
+def derive_forecast_band(
+    forecast_value: float,
+    block_band: BlockBand,
+    risk_buffer: float,
+) -> tuple[float, float, str]:
+    """Return the forecast band ``(low, high, source)`` for the signal.
 
-    if score >= constants.STRONG_LONG_THRESHOLD:
-        return "Strong long"
-    if score >= constants.LONG_THRESHOLD:
-        return "Long"
-    if score <= constants.STRONG_SHORT_THRESHOLD:
-        return "Strong short"
-    if score <= constants.SHORT_THRESHOLD:
-        return "Short"
-    return "Neutral"
+    Prefer the empirical P10-P90 band aggregated from validation residuals. When
+    that is unavailable (e.g. a freshly retrained period, or the peak/base
+    spread), fall back to a symmetric band built from the model's risk buffer.
+    """
+
+    if block_band.has_band:
+        return block_band.low, block_band.high, "p10_p90_residual"
+    return forecast_value - risk_buffer, forecast_value + risk_buffer, "risk_buffer_proxy"
+
+
+def derive_signal(forecast_low: float, forecast_high: float, benchmark: float) -> tuple[str, float]:
+    """Map the benchmark's position relative to the forecast band into a signal.
+
+    The band is the model's expected price range. If the benchmark sits below the
+    whole band the model expects higher prices (go long); above the whole band,
+    lower prices (go short); inside the band there is no conviction (neutral).
+    A move of more than a full band width beyond the edge is a strong signal.
+    """
+
+    band_width = forecast_high - forecast_low
+
+    if benchmark < forecast_low:
+        margin = forecast_low - benchmark
+        signal = "Strong long" if margin >= band_width else "Long"
+        return signal, margin
+    if benchmark > forecast_high:
+        margin = benchmark - forecast_high
+        signal = "Strong short" if margin >= band_width else "Short"
+        return signal, margin
+    return "Neutral", 0.0
+
+
+def build_decision_rationale(
+    block: str,
+    forecast_low: float,
+    forecast_high: float,
+    benchmark_value: float,
+    signal: str,
+    signal_margin: float,
+) -> str:
+    """Explain in plain language why the signal was produced."""
+
+    band_text = f"{forecast_low:.2f}-{forecast_high:.2f} EUR/MWh"
+    if signal == "Neutral":
+        return (
+            f"Benchmark {benchmark_value:.2f} sits inside the {block} forecast band "
+            f"({band_text}), so there is no directional conviction."
+        )
+    direction = "below" if "long" in signal.lower() else "above"
+    return (
+        f"Benchmark {benchmark_value:.2f} sits {direction} the {block} forecast band "
+        f"({band_text}) by {signal_margin:.2f} EUR/MWh, supporting a {signal.lower()} view."
+    )
 
 
 def desk_action_for_signal(signal: str, block: str) -> str:
@@ -180,7 +233,7 @@ def desk_action_for_signal(signal: str, block: str) -> str:
         return f"Buy or keep long exposure in the selected {block} delivery block."
     if "short" in signal.lower():
         return f"Sell or keep short exposure in the selected {block} delivery block."
-    return "Do not add directional exposure; monitor until the edge clears the risk buffer."
+    return "Do not add directional exposure; monitor until the benchmark moves outside the forecast band."
 
 
 def invalidation_logic() -> str:
@@ -223,10 +276,12 @@ def build_curve_view(
             )
         forecast_value = float(period_predictions["y_pred"].dropna().mean())
         prediction_coverage = float(period_predictions["y_pred"].notna().mean())
+        block_band = BlockBand(low=float("nan"), high=float("nan"), has_band=False)
     else:
         block_values = calculate_block_values(period_predictions)
         forecast_value = float(getattr(block_values, block))
         prediction_coverage = block_values.predicted_row_count / block_values.row_count
+        block_band = calculate_block_band(period_predictions, block)
 
     benchmark = build_benchmark(
         benchmark_method,
@@ -239,25 +294,34 @@ def build_curve_view(
     mae = read_metric_value(metrics_path, "mae")
     tail_metric_name, tail_metric_value = choose_tail_metric(edge, metrics_path)
     risk_buffer = max(mae, constants.TAIL_RISK_WEIGHT * tail_metric_value)
-    confidence_score = edge / risk_buffer if risk_buffer else float("nan")
-    signal = choose_signal(confidence_score)
+
+    forecast_low, forecast_high, band_source = derive_forecast_band(
+        forecast_value, block_band, risk_buffer
+    )
+    signal, signal_margin = derive_signal(forecast_low, forecast_high, benchmark.value)
+    decision_rationale = build_decision_rationale(
+        block, forecast_low, forecast_high, benchmark.value, signal, signal_margin
+    )
 
     return CurveView(
         period_start_utc=str(period.start_utc),
         period_end_utc=str(period.end_utc),
         block=block,
         forecast_fair_value=forecast_value,
+        forecast_low=forecast_low,
+        forecast_high=forecast_high,
+        band_source=band_source,
         benchmark_method=benchmark.method,
         benchmark_value=benchmark.value,
         edge=edge,
+        signal=signal,
+        signal_margin=signal_margin,
+        desk_action=desk_action_for_signal(signal, block),
+        decision_rationale=decision_rationale,
+        invalidation_logic=invalidation_logic(),
         mae=mae,
         tail_metric_name=tail_metric_name,
         tail_metric_value=tail_metric_value,
-        risk_buffer=risk_buffer,
-        confidence_score=confidence_score,
-        signal=signal,
-        desk_action=desk_action_for_signal(signal, block),
-        invalidation_logic=invalidation_logic(),
         prediction_coverage=prediction_coverage,
     )
 
@@ -283,21 +347,22 @@ def write_curve_view_outputs(view: CurveView, output_folder: str | Path) -> tupl
 ## Fair Value
 
 - Forecast fair value: `{view.forecast_fair_value:.2f}` EUR/MWh
+- Forecast band: `{view.forecast_low:.2f}` to `{view.forecast_high:.2f}` EUR/MWh (`{view.band_source}`)
 - Benchmark method: `{view.benchmark_method}`
 - Benchmark value: `{view.benchmark_value:.2f}` EUR/MWh
-- Edge: `{view.edge:.2f}` EUR/MWh
-
-## Risk Adjustment
-
-- MAE: `{view.mae:.2f}` EUR/MWh
-- Tail metric: `{view.tail_metric_name}` = `{view.tail_metric_value:.2f}` EUR/MWh
-- Risk buffer: `{view.risk_buffer:.2f}` EUR/MWh
-- Confidence score: `{view.confidence_score:.2f}`
+- Edge vs benchmark: `{view.edge:.2f}` EUR/MWh
 
 ## Signal
 
 - Signal: **{view.signal}**
+- Distance beyond band edge: `{view.signal_margin:.2f}` EUR/MWh
+- Rationale: {view.decision_rationale}
 - Desk action: {view.desk_action}
+
+## Model Error Context
+
+- MAE: `{view.mae:.2f}` EUR/MWh
+- Tail metric: `{view.tail_metric_name}` = `{view.tail_metric_value:.2f}` EUR/MWh
 
 ## Invalidation Logic
 

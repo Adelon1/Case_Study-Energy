@@ -1,859 +1,739 @@
-# European Power Fair Value Case Study
+# European Power Fair Value — Full Project Report
 
 Rawad Batous  
 rawad.batous2006@gmail.com
 
-## Executive Summary
+> This is the long-form internal report. It is deliberately more detailed than the
+> 1–3 page submission write-up. It records *what* was built, *how* the code works,
+> and *why* every important decision was made — including the literature each idea
+> came from. It absorbs and supersedes the earlier discussion logs (`Document.md`
+> and `session.md`), so it is meant to be read as a single coherent story rather
+> than a set of disconnected notes.
 
-This project builds a prototype workflow for a European power fair-value case study. The chosen market is the Germany/Luxembourg bidding zone. The prototype ingests public ENTSO-E data, constructs an hourly modelling dataset, validates baseline and improved day-ahead price models, translates model output into prompt-curve trading views, and includes a programmatic AI commentary component.
+---
 
-The project should be interpreted as a **daily rolling day-ahead forecasting workflow**, not as a one-shot model that can forecast an entire future month from today without updating. This distinction is critical. A daily day-ahead model may use yesterday's realised prices as lagged inputs. A one-shot next-month model cannot use future realised prices inside the delivery month unless those values are recursively predicted or explicitly treated as a perfect-foresight/oracle assumption.
+## 1. The one-sentence version
 
-A critical leakage audit found that the current feature builder still creates rolling price features using `price.shift(1).rolling(...)`. That is leakage for a full next-day auction forecast, because hour 23 of a delivery day would indirectly use hour 22 of the same delivery day. This must be fixed before final performance numbers are trusted. The correct conservative version is `price.shift(24).rolling(...)`, or removal of those rolling features.
+The project is a **daily rolling German day-ahead electricity price forecasting
+prototype** that turns public ENTSO-E fundamentals into hourly price forecasts,
+attaches an empirical uncertainty band to those forecasts, aggregates them into
+prompt-curve blocks (baseload, peakload, offpeak, peak/base spread), and converts
+the result into a long / neutral / short trading view with a desk action, an
+uncertainty-aware signal, and explicit invalidation logic — with one programmatic
+LLM commentary step bolted on top.
 
-The rest of the pipeline remains valuable: data ingestion, QA, feature construction, validation scaffolding, model interfaces, curve translation, and AI commentary are reusable. The main correction is to tighten the forecast information set and rebuild/revalidate after fixing leakage.
+Everything below is an unfolding of that sentence. The red line that connects all
+sections is a single question that dominated the design: **what information is the
+model actually allowed to know at the moment it forecasts a delivery day, and how do
+we stay honest about it?** That question drives the market choice, the data layout,
+the feature engineering, the model family, the validation design, the band logic,
+and the trading translation.
 
-## Assignment Requirements
+---
 
-The case study asks for four must-have components:
+## 2. Choosing the market: why Germany
 
-1. Public data ingestion and data quality.
-2. Forecasting and model validation.
-3. Prompt curve translation.
-4. AI-accelerated workflow.
+The case study allows one European market (DE, FR, NL, GB). Germany was chosen
+because it gives the richest market story for the smallest data effort: very high
+wind and solar penetration, a volatile post-2021 price regime, frequent negative
+prices, and several overlapping public data sources that can cross-check each other.
 
-The assignment recommends forecasting hourly day-ahead prices and deriving next-week or next-month averages from them. It explicitly requires time-series validation, leakage avoidance, MAE/RMSE, and at least one tail or stress metric if extremes are considered. It also requires a concrete translation from forecasts into long/neutral/short curve views and one LLM component called from code with prompt/output/failure logging.
+The data sources reviewed were:
 
-Reference: `TASK.md`, sections 1-4.
+- **ENTSO-E Transparency Platform** — official pan-European transparency data.
+- **Open Power System Data** — fast historical bootstrap.
+- **SMARD / Bundesnetzagentur** — German regulator data and figures.
+- **Fraunhofer Energy-Charts API** — convenient cross-check / fallback.
 
-## Market and Data Source Decision
+The final hierarchy is: **ENTSO-E as the primary source**, Energy-Charts as a
+fallback/cross-check, SMARD for German-specific documentation, and Open Power System
+Data as a historical bootstrap option. ENTSO-E was chosen as primary because it is
+the official public European source and, crucially, it publishes **leakage-safe
+day-ahead forecasts** of load, wind, and solar — exactly the ex-ante information a
+trader has before the auction. The German market is also the one the electricity
+price literature studies most heavily, so the modelling choices below can lean on
+papers that used the same market and the same ENTSO-E inputs.
 
-Germany was chosen because it has a rich market structure, strong public data availability, and several fallback sources. The reviewed sources were:
+A hard scope rule was fixed at this point and kept throughout: **the only
+fundamentals used are load, solar, and wind. No fuel prices, no carbon, no
+cross-border flows.** This keeps the project auditable and the feature set honest.
 
-- ENTSO-E Transparency Platform.
-- Open Power System Data.
-- SMARD / Bundesnetzagentur.
-- Fraunhofer Energy-Charts API.
+---
 
-The final source hierarchy was:
+## 3. The question that shaped the whole project: actual inputs vs forecast inputs
 
-- Primary source: ENTSO-E Transparency Platform.
-- Fallback/cross-check: Fraunhofer Energy-Charts API.
-- Germany-specific documentation and figures: SMARD / Bundesnetzagentur.
-- Fast historical bootstrap option: Open Power System Data.
+Before writing any model, one methodological question had to be settled, because it
+decides what "good performance" even means.
 
-The decision to use ENTSO-E was based on its official public European transparency data and availability of day-ahead prices, load forecasts, wind forecasts, and solar forecasts. This decision is documented in `Document.md`, "Germany Data Source Decision".
+There are two very different models you can build:
 
-## Public Data Ingestion
+1. Train on **actual realised** load/wind/solar. Clean, unbiased inputs. But you
+   never have the realised values before the auction, so this is not tradable.
+2. Train on **forecasted** load/wind/solar — the values published *before* the
+   auction. Noisier, biased, but this is the real information set a desk trades on.
 
-### Data Source
+It turns out this is a 30-year-old debate in meteorological post-processing, where it
+is called **Perfect Prog vs MOS**. The foundational reference is Marzban, Sandgathe &
+Kalnay, *MOS, Perfect Prog, and Reanalysis*
+([pdf](https://faculty.washington.edu/marzban/mos.pdf)). Mapping their framework onto
+this project:
 
-The implemented pipeline uses the ENTSO-E Transparency Platform REST API:
+- training on **actual** fundamentals = **Perfect Prog** (structural / oracle);
+- training on **forecast** fundamentals = **MOS** (tradable / ex-ante).
 
-```text
-https://web-api.tp.entsoe.eu/api
-```
+Their conclusion — and the reason this matters — is that there is no universal winner.
+MOS learns the forecast's own bias, but ties you to one forecast provider; Perfect
+Prog is simpler but suffers when live forecast error differs from training conditions.
+The empirical follow-ups confirm both sides: Brunet, Verret & Yacowar
+([1988](https://journals.ametsoc.org/view/journals/wefo/3/4/1520-0434_1988_003_0273_aocomo_2_0_co_2.xml))
+found Perfect Prog competitive at short range, while Wilson & Vallée
+([2003](https://journals.ametsoc.org/view/journals/wefo/18/2/1520-0434_2003_018_0288_tcumos_2_0_co_2.xml))
+showed an *updateable* MOS can beat both — which matters here because the validation
+design retrains every month.
 
-The project stores the ENTSO-E token in `.env`:
+The same tension shows up directly in energy load forecasting. Fay & Ringwood
+([2010](https://ee.maynoothuniversity.ie/jringwood/Respubs/J156DFPS.pdf)) argue you can
+reasonably train on actual weather (forecast archives are noisy and weather models
+keep improving) — but they warn that live forecast error, unseen in training, can hurt
+disproportionately. Wang et al.
+([2020](https://www.sciencedirect.com/science/article/am/pii/S0306261920301951)) show
+empirically that "train on actuals, test on forecasts" degrades some models badly,
+which is a concrete caution against the naive Perfect Prog route. Runge & Saloux
+([2023](https://www.sciencedirect.com/science/article/abs/pii/S0360544223000555)) give
+the clean vocabulary the report uses: *prediction* uses contemporaneous actual inputs,
+*forecasting* uses future forecast inputs — they are not the same task. Fildes, Randall
+& Stubbs ([1997](https://www.jstor.org/stable/3009939)) add the evaluation rule that
+ex-ante performance must account for the fact that the explanatory variables are
+themselves forecasts.
 
-```text
-ENTSOE_API_KEY=...
-```
+For electricity prices specifically, the literature has effectively already settled
+the question in favour of the tradable, forecast-input model:
 
-`.env.example` documents how to request the token using the ENTSO-E guide. This follows the decision in `Document.md`, "ENTSO-E Security Token Request".
+- Maciejowska, Nitka & Weron
+  ([2021](https://www.sciencedirect.com/science/article/abs/pii/S014098832100178X))
+  — the most directly relevant paper — show that TSO load/wind/solar forecasts are
+  biased, that serious price papers nonetheless use *forecasted* fundamentals, and
+  that improving those fundamentals improves price accuracy.
+- Uniejewski & Ziel
+  ([2025](https://arxiv.org/abs/2501.06180)) push this further with probabilistic
+  fundamental forecasts.
+- Kulakov & Ziel ([2019](https://arxiv.org/abs/1903.09641)) and Goodarzi, Perera &
+  Bunn ([2019](https://www.sciencedirect.com/science/article/abs/pii/S0301421519304057))
+  show renewable forecast errors have real, economically meaningful price impact — so
+  the gap between an oracle and a tradable model is not a rounding error.
+- Beran, Vogler & Weber
+  ([2021](https://ideas.repec.org/p/dui/wpaper/2102.html)) emphasise respecting the
+  information cutoff in German multi-day-ahead forecasting — which is exactly the
+  leakage discipline applied below.
 
-### Dataset Choices
+**The resolution adopted here:** the *primary* model is the tradable, forecast-input
+(MOS-style) model. An actual-input model is only ever legitimate as a labelled
+oracle / perfect-foresight benchmark, never as the headline result. The performance
+gap between them is itself the interesting output — it quantifies the cost of not
+knowing the true future fundamentals. The implemented prototype focuses on the
+tradable model; the oracle is documented as the natural next comparison.
 
-The main dataset uses:
+This single decision is the spine of the rest of the report.
 
-- `day_ahead_prices`
-- `load_forecast`
-- `solar_forecast`
-- `wind_onshore_forecast`
-- `wind_offshore_forecast`
+---
 
-This satisfies the minimum requirement of hourly day-ahead prices plus at least two fundamental drivers. It uses forecasted fundamentals as the primary tradable input set, consistent with the methodological conclusion in `session.md`: the main tradable model should use ex-ante load/wind/solar forecasts.
+## 4. Data ingestion: how raw ENTSO-E becomes a clean hourly table
 
-### Storage Layout
-
-The intended storage design is layered:
+The ingestion code lives in `pipeline_helpers/entsoe_data/` and is driven by
+`pipeline_steps/01_build_dataset.py`. It implements the layered data design that keeps
+raw responses, parsed tables, and the modelling table separate:
 
 ```text
 data/
-  raw/
-  interim/
-  processed/
+  raw/         # native API responses, preserved untouched (ENTSO-E XML)
+  interim/     # one parsed CSV per dataset
+  processed/   # combined hourly table + feature table + QA report
 ```
 
-Raw files preserve API responses, interim files contain one parsed CSV per dataset, and processed files contain the combined hourly table, feature table, QA report, model outputs, and curve reports. This layout follows `Document.md`, "Data Storage Layout".
-
-Current code creates matched run folders through:
-
-```text
-pipeline_helpers/entsoe_data/dataset_folders.py
-```
-
-and the main data builder is:
-
-```text
-pipeline_steps/build_dataset.py
-```
-
-## Ingestion Pipeline Code
-
-The ingestion pipeline is implemented as:
-
-```text
-pipeline_steps/build_dataset.py
-```
-
-It performs these stages:
-
-1. Parse command-line arguments: selected datasets, local start/end dates, mode, `.env` path.
-2. Convert German local date input into UTC API windows.
-3. Split the requested window into monthly chunks.
-4. Download ENTSO-E XML files for each dataset and chunk.
-5. Parse XML files into one standardized interim CSV per dataset.
-6. Combine all interim CSVs into one hourly dataset.
-7. Apply leakage-safe missing-value imputation for forecast fundamentals.
-8. Write a data QA report.
-9. Build the feature table.
-
-Important helper files:
-
-- `pipeline_helpers/entsoe_data/entsoe_api.py`: sends ENTSO-E GET requests and saves XML responses.
-- `pipeline_helpers/entsoe_data/entsoe_xml_to_csv.py`: parses ENTSO-E XML periods and points into standardized timestamp/value rows.
-- `pipeline_helpers/entsoe_data/combine_dataset_csvs.py`: joins datasets by `timestamp_utc`, aggregates to hourly means, imputes missing forecast fundamentals.
-- `pipeline_helpers/entsoe_data/build_features.py`: builds modelling features.
-- `pipeline_helpers/entsoe_data/date_windows.py`: handles local date to UTC window conversion.
-
-## Timezone and DST Handling
-
-The canonical timestamp is:
-
-```text
-timestamp_utc
-```
-
-The project uses UTC for joining, filtering, validation, and model window splitting. This avoids duplicate or missing timestamp keys during daylight-saving-time transitions.
-
-Local German time is still important for interpretation and trading blocks. The combined dataset includes:
-
-```text
-timestamp_local
-```
-
-derived from UTC using `Europe/Berlin`.
-
-The project learned an important DST lesson during feature engineering. Full daily price-curve features were initially built using local market dates/hours. That created missing cells on spring DST days, where local hour 02:00 does not exist. The code was changed to build full daily price-curve lag features in UTC. This avoids 23/25-hour local-day matrix problems. This decision is not directly in `Document.md`, but it follows the same UTC-canonical design recorded in `Document.md`, "Data Storage Layout".
-
-The later improvement added local calendar features only:
-
-- `local_hour`
-- `local_weekday`
-- `local_month`
-- `local_day_of_year`
-- local cyclic encodings
-- local weekday dummies
-
-This is DST-safe because these are row-wise timestamp features, not full local-day pivots.
-
-## Missing Data and Imputation
-
-The ENTSO-E source can contain missing periods for some forecast series. We observed a concrete example where `load_forecast` was missing more than expected for a February 2022 window. Investigation showed this was source-side missing data rather than parser error.
-
-The implemented imputation is in:
-
-```text
-pipeline_helpers/entsoe_data/combine_dataset_csvs.py
-```
-
-It applies after hourly assembly and before feature generation:
-
-```text
-missing value at time t = same column value at t - 24h
-```
-
-Only forecast driver columns are imputed:
-
-- `load_forecast_mw`
-- `solar_forecast_mw`
-- `wind_onshore_forecast_mw`
-- `wind_offshore_forecast_mw`
-
-If `t-24h` is unavailable, rows with remaining missing forecast fundamentals are dropped before feature generation. This avoids future-value imputation and keeps the procedure leakage-safe for fundamentals.
-
-## Data QA Report
-
-`build_dataset.py` writes:
-
-```text
-data/processed/.../data_qa_report.md
-```
-
-The report includes:
-
-- dataset run name
-- source endpoint
-- included datasets
-- requested local delivery window
-- API UTC window
-- parsed input frequency
-- final assembled frequency
-- expected versus actual row count
-- coverage
-- duplicate timestamps
-- missing values
-- imputation counts
-- simple outlier checks
-- timestamp alignment explanation
-- DST handling explanation
-- known limitations
-
-This satisfies the Task 1 requirement for generated QA output.
-
-## Forecasting Methodology
-
-### Target
-
-The target is:
-
-```text
-day_ahead_price_eur_per_mwh
-```
-
-The chosen assignment approach is Option A: forecast hourly day-ahead prices and aggregate them into curve-relevant blocks. This is the assignment's recommended approach and is more flexible than directly forecasting a monthly average.
-
-### Forecast Information Set
-
-This is the most important modelling concept in the project.
-
-The primary model should represent a tradable ex-ante information set:
-
-- load forecast
-- wind forecast
-- solar forecast
-- lagged prices known before the forecast
-- calendar features
-
-It should not use future actual load/wind/solar generation, and it should not use same-delivery-day actual prices when forecasting the full next delivery day.
-
-This follows the methodological conclusion in `session.md`: the primary model should be a forecast-input/tradable/MOS-style model. Actual-input models may be useful only as structural/oracle benchmarks.
-
-### Actual Inputs Versus Forecast Inputs
-
-The external discussion in `session.md` framed this as:
-
-- Perfect Prog / structural / oracle model: train on actual fundamentals, possibly deploy with forecasts.
-- MOS-style / tradable model: train and deploy on forecasted fundamentals.
-
-The main project should use the tradable forecast-input model:
-
-```text
-forecasted load, forecasted wind, forecasted solar -> price
-```
-
-because these are available before the auction. Actual realised fundamentals should only be presented as an oracle upper bound or structural benchmark if implemented.
-
-This decision is supported by:
-
-- `session.md`, "Recommended Two-Model Design".
-- `session.md`, "Strong Final Position".
-- `Document.md`, "External Discussion Notes in session.md".
-
-## Literature and Paper Findings
-
-The literature review in `session.md` shaped the modelling decisions.
-
-### MOS versus Perfect Prog
-
-Marzban, Sandgathe & Kalnay, "MOS, Perfect Prog, and Reanalysis" explains the statistical distinction between training on observations and training on model forecasts. In this project:
-
-- training on actual fundamentals maps to Perfect Prog;
-- training on forecasted fundamentals maps to MOS-style modelling.
-
-Brunet, Verret & Yacowar and Wilson & Vallée were discussed as empirical comparisons. The conclusion was not that one approach universally dominates; rather, the correct choice depends on forecast horizon, forecast archive quality, updateability, and train-live mismatch.
-
-### Forecast Error in Energy Problems
-
-Fay & Ringwood support the argument that training on actual weather can be reasonable in energy forecasting, because forecast archives are noisy and weather models improve over time. But they also warn that live forecast errors can hurt operational performance.
-
-Wang et al. and Runge & Saloux reinforce the distinction between prediction with actual contemporaneous inputs and true forecasting with future forecast inputs.
-
-Fildes, Randall & Stubbs show that exogenous weather variables improve utility demand forecasting, while also emphasizing that ex-ante evaluation must account for whether explanatory variables are themselves forecasts.
-
-### Electricity Price Forecasting Literature
-
-Maciejowska, Nitka & Weron are especially relevant for Germany. They show that load, wind, and solar forecasts are biased and that improving these forecasts can improve electricity price forecasting. This supports using public forecast fundamentals while leaving separate fundamental forecast enhancement as future work.
-
-Uniejewski & Ziel show that probabilistic forecasts of load, solar, and wind can improve electricity price forecasting. This supports the importance of fundamental forecast uncertainty, but it is beyond this prototype's scope.
-
-Kulakov & Ziel and Goodarzi, Perera & Bunn show that renewable forecast errors affect intraday/spot prices and imbalance outcomes. This confirms that forecast errors are economically meaningful.
-
-Beran, Vogler & Weber emphasize respecting information availability in German multi-day-ahead price forecasting. This is directly relevant to the leakage concern.
-
-Lago et al. and Weron support the project's validation choices: baseline models, time-series splits, transparent metrics, leakage control, and reproducibility.
-
-## Models Implemented
-
-### Baseline: Seasonal Lag Model
-
-File:
-
-```text
-pipeline_helpers/modelling/baseline_week_lag.py
-```
-
-The model predicts using a configured lag:
-
-- 24 hours
-- 48 hours
-- 168 hours
-
-It has a `train()` function for interface consistency, but no fitted state.
-
-Purpose:
-
-- simple benchmark;
-- sanity check;
-- relative MAE denominator for improved models.
-
-### LEAR-Style Regularised ARX Model
-
-File:
-
-```text
-pipeline_helpers/modelling/lear_model.py
-```
-
-This is described as a **LEAR-style 24-hour regularised ARX model**, not an exact reproduction of LEAR. It fits 24 separate regularised linear models, one per local delivery hour.
-
-Supported regularisation:
-
-- LASSO
-- ElasticNet
-- Ridge
-
-Supported target transforms:
-
-- raw
-- asinh
-
-The current project view is:
-
-- keep asinh support in code;
-- do not treat it as the final default if rolling validation shows raw prices perform better;
-- describe asinh as tested/rejected if results deteriorate.
-
-Main feature groups:
-
-- forecast fundamentals;
-- residual load and renewable shares;
-- German local calendar features;
-- local weekday dummies;
-- lagged prices;
-- UTC daily price-curve lags `d-1`, `d-2`, `d-3`, `d-7`.
-
-Training diagnostics now include:
-
-- fitted hours;
-- number of training rows by hour;
-- feature columns.
-
-The model raises an error if not all 24 hourly models fit.
-
-### Histogram Gradient Boosting Model
-
-File:
-
-```text
-pipeline_helpers/modelling/hist_gradient_boosting.py
-```
-
-This is a nonlinear benchmark using sklearn's `HistGradientBoostingRegressor`.
-
-The grid includes:
-
-- `absolute_error` loss candidates;
-- `squared_error` loss candidates;
-- different learning rates, iterations, leaf counts, minimum leaf sizes, and L2 regularisation.
-
-Internal early stopping is disabled because external rolling validation controls model selection.
-
-HGB is allowed to receive NaNs in feature columns because sklearn's histogram gradient boosting can handle missing feature values. It still drops rows where the target is missing.
-
-## Feature Engineering
-
-File:
-
-```text
-pipeline_helpers/entsoe_data/build_features.py
-```
-
-Current feature construction:
-
-1. Fundamental features:
-   - total wind forecast;
-   - renewable total forecast;
-   - residual load forecast;
-   - wind share of load;
-   - solar share of load;
-   - renewable share of load.
-
-2. Calendar features:
-   - UTC hour/weekday/month/day-of-year;
-   - local German hour/weekday/month/day-of-year;
-   - local cyclic encodings;
-   - local weekday dummies.
-
-3. Price lags:
-   - `price_lag_24`;
-   - `price_lag_48`;
-   - `price_lag_168`.
-
-4. Rolling price features:
-   - `price_rolling_mean_24`;
-   - `price_rolling_std_24`;
-   - `price_rolling_mean_168`;
-   - `price_rolling_std_168`.
-
-5. Daily UTC price-curve lags:
-   - `price_d1_h00` ... `price_d1_h23`;
-   - `price_d2_h00` ... `price_d2_h23`;
-   - `price_d3_h00` ... `price_d3_h23`;
-   - `price_d7_h00` ... `price_d7_h23`;
-   - `price_d1_min`, `price_d1_max`, `price_d1_mean`;
-   - `price_d7_min`, `price_d7_max`, `price_d7_mean`.
-
-## Critical Leakage Audit
-
-This section is intentionally explicit because it is the largest current modelling risk.
-
-The feature builder currently creates rolling price features from:
+The pipeline runs end to end as:
+
+1. **Parse CLI arguments** — which datasets, the German local start/end dates, mode,
+   and the `.env` path (`01_build_dataset.py`).
+2. **Convert local dates to UTC API windows** (`date_windows.py`). The user thinks in
+   German delivery dates; ENTSO-E wants UTC windows.
+3. **Split into monthly chunks** so each download stays small and resumable.
+4. **Download XML** per dataset and chunk (`entsoe_api.py`), reading the token from
+   `ENTSOE_API_KEY` in the environment and saving raw XML under `data/raw/`.
+5. **Parse XML to standardized CSV** (`entsoe_xml_to_csv.py`) — one
+   `timestamp_utc, value` table per dataset in `data/interim/`.
+6. **Combine datasets** on `timestamp_utc`, aggregate to hourly means, and impute
+   missing forecast fundamentals (`combine_dataset_csvs.py`).
+7. **Write the data QA report** (`data_qa_report.md`).
+8. **Build the feature table** (`pipeline_helpers/entsoe_data/build_features.py`).
+
+The main dataset uses `day_ahead_prices`, `load_forecast`, `solar_forecast`,
+`wind_onshore_forecast`, and `wind_offshore_forecast` — hourly day-ahead prices plus
+four ex-ante fundamental drivers, comfortably satisfying the "price + at least two
+fundamentals" requirement and matching the tradable-model decision from Section 3.
+
+### Timezone and DST — the canonical-UTC rule
+
+The canonical timestamp is `timestamp_utc`, used for every join, filter, validation
+split, and model window. German local time is carried as `timestamp_local` (derived
+via `Europe/Berlin`) purely for interpretation and trading blocks. Using UTC as the
+join key is what makes the 23-hour and 25-hour DST days harmless: there are never
+duplicate or missing key timestamps.
+
+A concrete DST lesson is baked into the feature code. The full daily price-curve lag
+features (the 24-hour shapes) are built on **UTC** hours, not local hours, so every
+day has exactly 24 columns even across spring/autumn clock changes. Local time is used
+only for *row-wise* calendar features (hour, weekday, month), which are DST-safe
+because they never pivot a whole local day.
+
+### Missing data and leakage-safe imputation
+
+ENTSO-E forecast series occasionally have gaps (a real example was a February 2022
+`load_forecast` gap, confirmed source-side, not a parser bug). Imputation in
+`combine_dataset_csvs.py` fills a missing forecast value at time *t* with the same
+column at *t − 24h*, and only for the four forecast driver columns. The fill is
+applied **repeatedly, up to 7 times**, so a value can be recovered from *t − 24h*,
+then *t − 48h*, and so on up to a week back — this recovers multi-day outages while
+still only ever copying an *older* value, never a future one. Any rows still missing a
+forecast driver after the seven passes are dropped before features are built. Because
+every fill reaches strictly backward in time, the procedure stays leakage-safe.
+
+### The QA report
+
+`01_build_dataset.py` writes `data/processed/.../data_qa_report.md` covering: run name,
+source endpoint, included datasets, requested local window, API UTC window, parsed vs
+final frequency, expected vs actual row counts, coverage, duplicate timestamps,
+missing values, imputation counts, outlier checks, timestamp-alignment explanation,
+DST handling, and known limitations. This is the Task-1 generated QA artifact.
+
+---
+
+## 5. Feature engineering: rich, but leakage-safe by construction
+
+Features are built in `pipeline_helpers/entsoe_data/build_features.py` in four blocks.
+The governing principle is the Section-3 information cutoff: a full next-day forecast
+must never peek at another hour of the same delivery day.
+
+1. **Fundamental features** — total wind (onshore + offshore), renewable total,
+   residual load (load − solar − wind), and wind/solar/renewable shares of load. These
+   encode the merit-order intuition that price is driven by *residual* load.
+2. **Calendar features** — local German hour, weekday, month, day-of-year, weekend and
+   holiday flags (German nationwide holidays via the `holidays` package), cyclic
+   sine/cosine encodings, and weekday dummies. All row-wise, all DST-safe.
+3. **Rolling price statistics** — `price_rolling_mean_24/std_24` and
+   `price_rolling_mean_168/std_168`, all built from `price.shift(24)` (see below).
+4. **Daily UTC price-curve lags** — the full 24-hour price shapes from d-1, d-2, d-3,
+   and d-7, plus min/max/mean summaries for d-1 and d-7 only. This is the LEAR-style
+   structure that captures intraday and weekly seasonality.
+
+There are deliberately **no plain same-hour price lags** (an earlier version carried
+`price_lag_24/48/168`). They were removed because they are exact duplicates of the
+daily price-curve columns: `price_lag_24` is identically the d-1 diagonal
+`price_d1_h{H}`, `price_lag_48` the d-2 diagonal, and `price_lag_168` the d-7 diagonal.
+Keeping both fed perfectly collinear columns into the linear model, which makes its
+coefficients unstable without adding any information. Dropping the scalars keeps the
+feature set honest and the LEAR weights well-posed; the same lagged information is still
+present, hour-by-hour, in the price-curve block.
+
+Before any of the shift-based features are built, `reindex_to_full_hourly_grid`
+re-inserts any hours the combine stage dropped as empty rows, so the table sits on a
+gap-free hourly UTC clock. This matters for correctness: once a row is missing,
+`shift(n)` no longer means "`n` hours ago" and every price lag and rolling window would
+silently misalign. The empty filler rows are removed again by the final `dropna` on the
+required columns, so they never reach the model.
+
+**The leakage fix that matters most.** Rolling price statistics are computed from
+`price.shift(24)`, not `price.shift(1)`:
 
 ```python
-shifted_price = price.shift(1)
-features["price_rolling_mean_24"] = shifted_price.rolling(24).mean()
-features["price_rolling_std_24"] = shifted_price.rolling(24).std()
+shifted_price = price.shift(24)
+features["price_rolling_mean_24"]  = shifted_price.rolling(24).mean()
+features["price_rolling_std_24"]   = shifted_price.rolling(24).std()
 features["price_rolling_mean_168"] = shifted_price.rolling(168).mean()
-features["price_rolling_std_168"] = shifted_price.rolling(168).std()
+features["price_rolling_std_168"]  = shifted_price.rolling(168).std()
 ```
 
-This is safe for sequential one-hour-ahead forecasting after the previous hour's actual price is known. It is **not safe** for a day-ahead full-delivery-day forecast made before the auction, because hour 23 of the delivery day may use hour 22 of the same delivery day through the rolling window.
+With `shift(1)`, hour 23 of a delivery day would indirectly use hour 22 of the *same*
+delivery day through the rolling window — invisible leakage that inflates accuracy.
+`shift(24)` guarantees every rolling feature is built only from prices that were known
+a full day before delivery. This is the practical embodiment of the information-cutoff
+discipline that Beran, Vogler & Weber and Lago et al. insist on.
 
-Therefore, current validation results using these rolling features may be overstated.
+### 5.1 From feature store to model-ready table (`modelling_dataset.py`)
 
-The conservative fix is:
+`build_features.py` writes one wide feature store with every candidate column. Which of
+those columns a model is actually allowed to see is decided separately, in
+`pipeline_helpers/modelling/modelling_dataset.py`. Keeping selection out of the models
+means the leakage rules live in exactly one place, and every model is guaranteed to
+receive the same safe column set.
+
+Two **targets** are supported:
+
+- **`hourly`** (default) — one row per delivery hour, target = the hourly price. This is
+  the day-ahead forecast.
+- **`period_average`** — one row per delivery period of length `period_days`, target =
+  the average price over that period for a chosen block (baseload / peakload / offpeak).
+  Here the table is aggregated to periods, fundamentals become per-period
+  mean/min/max/std, and the price history becomes previous-period lags.
+
+For the hourly target, a **feature mode** chooses how much price history is safe to use,
+because what counts as leakage depends on how far ahead you are forecasting:
+
+- **`day_ahead_full`** — the full price block (rolling stats + d-1/d-2/d-3/d-7 curves).
+  Correct for a one-day-ahead forecast, where everything up to d-1 is known.
+- **`period_hourly_safe`** — only price columns whose lag is at least the whole forecast
+  period (`price_dN` with `N·24h ≥ period_days·24h`). Used when hourly predictions feed a
+  multi-day period view, so the model never sees a price from inside the period it is
+  forecasting.
+- **`fundamentals_calendar_only`** — drop price history entirely; forecast from
+  fundamentals and calendar alone. The honest floor when no usable price lag exists.
+
+The module is strict about its contract, and the errors it raises are part of the design:
+
+- `require_columns` raises *"Feature table is missing required features: …"* if the
+  calendar columns a model needs are absent — a malformed feature store fails loudly
+  instead of training on a silently shorter feature set.
+- an unknown feature mode raises *"Unsupported feature mode: …"*, and an unknown target
+  raises *"Unsupported target option: …"*, so a typo in a CLI flag can never fall through
+  to a wrong-but-plausible run.
+- `period_average` with an unsupported block raises a clear error naming the three valid
+  blocks.
+
+The result is a small `ModellingDataset` (table, target column, selected feature
+columns, target, feature mode) that the validation engine consumes without ever needing
+to know how the columns were chosen.
+
+---
+
+## 6. The models
+
+Each model lives in `pipeline_helpers/modelling/<name>.py` and exposes the same tiny
+contract so the validation engine never needs model-specific knowledge:
 
 ```python
-safe_price = price.shift(24)
-features["price_rolling_mean_24"] = safe_price.rolling(24).mean()
-features["price_rolling_std_24"] = safe_price.rolling(24).std()
-features["price_rolling_mean_168"] = safe_price.rolling(168).mean()
-features["price_rolling_std_168"] = safe_price.rolling(168).std()
+MODEL_NAME
+build_param_grid(**options)   # list of parameter dicts to try
+train(train_data, params)     # returns fitted state
+predict(state, test_data, params)
+output_folder_name(**options) # optional, for tidy artifact folders
 ```
 
-or remove rolling price features from model feature sets entirely.
+Models are loaded dynamically by `model_support.load_model_module` via `importlib`,
+so adding a model is just dropping in a new file. This uniform interface was a
+deliberate early design decision: the same engine then drives the baseline, the LEAR
+model, and the boosted trees.
 
-This issue is conceptually related to `session.md`, especially Beran, Vogler & Weber and the repeated emphasis on respecting information available at or before forecast time.
+### 6.1 Baseline — seasonal lag (`baseline_week_lag.py`)
 
-## Validation Design
+The baseline predicts the target from one of its own past values, with no fitted state —
+`train()` returns `None` purely to honour the interface, and `predict()` just reads a
+lagged column. The lag is measured in **rows of the modelling table**, and because a row
+means a different span of time for each target, `build_param_grid` returns a different
+grid per target:
 
-Files:
+- **`hourly`** target — a row is one hour, so the candidate lags are 24h (same hour
+  yesterday), 48h (two days ago), and 168h (same hour last week). The headline baseline
+  is the same-hour-last-week lag of 168 rows.
+- **`period_average`** target — a row is one whole delivery period, so the candidate lags
+  are the previous 1, 2, 4, 7, and 12 periods. The `period_days` and `block` settings do
+  not change the grid: they only change what "one row" already means, so a row-based lag
+  scales automatically.
+
+Its job is to be the honest denominator: an improved model that cannot beat last week's
+price is not worth deploying. Lago et al. explicitly warn against weak benchmarks, so a
+real seasonal naive is used rather than a trivial one.
+
+### 6.2 Headline model — LEAR-style 24-hour regularised ARX (`lear_model.py`)
+
+This is the project's main forecaster: a **LEAR-style** model, i.e. 24 separate
+regularised linear models, one per local delivery hour. It is described as
+"LEAR-style" rather than an exact reproduction of any one paper. The lineage:
+
+- Ziel ([2016](https://arxiv.org/abs/1509.01966)) defines LEAR as a LASSO-estimated
+  autoregressive model with exogenous variables and justifies the rich d-1 / d-7 lag
+  structure.
+- The `epftoolbox` reference implementation
+  ([docs](https://epftoolbox.readthedocs.io/en/latest/modules/lear_model.html),
+  [repo](https://github.com/jeslago/epftoolbox)) confirms the 24-hourly-model design.
+- Ziel & Weron ([2018](https://arxiv.org/abs/1805.06649)) show hour-specific
+  (univariate) structures are not dominated by pooled models — so 24 models is
+  defensible, not just convenient.
+- Uniejewski & Weron ([2018](https://www.mdpi.com/1996-1073/11/8/2039)) motivate the
+  optional `asinh` price transform for spikes; Uniejewski
+  ([2024](https://arxiv.org/abs/2404.03968)) motivates ElasticNet as an alternative to
+  pure LASSO and confirms cross-validation works for tuning.
+
+Implementation details that matter:
+
+- Each hourly model is a `Pipeline([StandardScaler, CV-regressor])`, so scaling is
+  fitted inside each fold with no leakage.
+- The regulariser self-tunes per hour: `LassoCV` / `ElasticNetCV` pick their own alpha
+  along a path of length `LEAR_ALPHA_PATH_LENGTH`, `RidgeCV` over `RIDGE_ALPHA_GRID`,
+  each via an internal `TimeSeriesSplit`. The result is genuinely **24 different alphas**
+  — the model spends regularisation where each hour needs it.
+- The fitted state records `alpha_by_hour`, `fitted_hours`, and
+  `n_train_rows_by_hour`, and the model raises if any of the 24 hourly fits fail, so a
+  silently half-trained model can never be scored.
+- Target transforms `raw` and `asinh` are both supported; `raw` is the default and is
+  kept unless validation shows `asinh` helps.
+
+### 6.3 Nonlinear benchmark — boosted trees (`boosted_trees.py`)
+
+The nonlinear counterpart is a single pooled `HistGradientBoostingRegressor`. The
+motivation is that trees capture interactions (hour × residual load, weekday ×
+renewable share) automatically. The choice of boosted trees over deep nets is
+deliberate and literature-backed: Xie et al.
+([2022](https://link.springer.com/article/10.1007/s00202-021-01410-6)) and a recent
+short-training-window ENTSO-E study
+([2025](https://arxiv.org/html/2506.10536v1)) show gradient-boosted trees are
+competitive-to-superior for day-ahead prices, while Lago, De Ridder & De Schutter
+([2018](https://www.sciencedirect.com/science/article/pii/S030626191830196X)) show deep
+learning works but adds heavy tuning. For a case study, boosted trees give the better
+performance/interpretability/delivery trade-off. Kernel methods and neural nets were
+explicitly considered and rejected for cost and tuning burden.
+
+Implementation notes: the model declares `local_hour`, `local_weekday`, and
+`local_month` as native categoricals; internal early stopping is **off** because the
+external rolling validation owns model selection; `build_param_grid` returns four
+configurations (loss × learning-rate / depth variants).
+
+---
+
+## 7. Validation: rolling-origin, leakage-free, operationally realistic
+
+Validation lives in `pipeline_helpers/modelling/validation.py` and is driven by
+`pipeline_steps/02_validate_model.py`. It is the part Lago et al.
+([2021](https://arxiv.org/abs/2008.08004)) care about most, and their best-practice
+review shaped every choice here: **no random K-fold** (it leaks the future into the
+past), proper time-series blocking, a strong baseline, transparent metrics, and a
+reproducible dataset.
+
+The fixed forecasting task is:
 
 ```text
-pipeline_helpers/modelling/validation.py
-pipeline_steps/validate_model.py
+train previous 24 months  ->  test next 1 month  ->  step forward 1 month
 ```
 
-The model interface is:
-
-```python
-def train(train_data, params):
-    ...
-
-def predict(model_state, test_data, params):
-    ...
-```
-
-This was decided in `Document.md`, "Modelling Validation Design".
-
-The validation engine:
-
-1. Loads the feature table.
-2. Infers complete calendar-month windows.
-3. Reserves the final test window from the end of the data.
-4. Builds rolling train/test windows before the final holdout.
-5. Loops over each model's parameter grid.
-6. Scores each fold.
-7. Chooses best parameters by MAE with stress metrics as tie-breakers.
-8. Evaluates the selected parameters on the final holdout.
-9. Saves metrics, predictions, diagnostics, and model artifacts.
-
-Current constants:
-
-```python
-TRAIN_MONTHS = 24
-TEST_MONTHS = 1
-STEP_MONTHS = 1
-```
-
-Earlier discussion used `STEP_MONTHS = 3` for faster experiments and `TEST_MONTHS = 1` to match near-term operational forecasting. The current setting of `STEP_MONTHS = 1` is intended for final validation coverage, while a larger step can still be used for quick experiments. This connects to `Document.md`, "Modelling Validation Design".
-
-Validation outputs include:
-
-- `validation_metrics.csv`
-- `validation_summary.csv`
-- `final_holdout_metrics.csv`
-- `final_holdout_predictions.csv`
-- prediction coverage diagnostics
-- monthly metric breakdowns
-- yearly metric breakdowns
-- saved model state
-- best parameter JSON
-- model metadata JSON
-
-## Metrics
-
-Metrics include:
-
-- MAE: average absolute hourly price error.
-- RMSE: root mean squared error, more sensitive to large misses.
-- Bias: average signed error.
-- Top-decile MAE: MAE during highest-price hours.
-- Bottom-decile MAE: MAE during lowest-price hours.
-- Negative-price MAE.
-- Scarcity-price MAE.
-- Relative MAE versus baseline, when baseline outputs exist.
-
-Tail metrics are required by the assignment if modelling extremes. The current top/bottom decile and scarcity/negative-price metrics satisfy this requirement at a basic level.
-
-Known improvement:
-
-- current top/bottom thresholds are based on each test window's true distribution;
-- an even stricter ex-ante stress design would compute thresholds from the training window.
-
-## Model Persistence
-
-Validation now saves reusable model artifacts:
-
-```text
-final_holdout_model.joblib
-best_params.json
-model_metadata.json
-```
-
-`joblib` stores Python/sklearn model objects. It is not for manual viewing in Excel; it is loaded from Python with:
-
-```python
-import joblib
-model_state = joblib.load("final_holdout_model.joblib")
-```
-
-Period-specific prediction training is handled by:
-
-```text
-pipeline_helpers/modelling/period_prediction.py
-```
-
-It trains on the previous rolling window and predicts a requested period, saving:
-
-```text
-period_predictions/YYYYMMDD_YYYYMMDD/
-  predictions.csv
-  metrics.csv
-  model.joblib
-  metadata.json
-```
-
-## Prompt Curve Translation
-
-Files:
-
-```text
-pipeline_helpers/curve_translation/
-pipeline_steps/translate_curve_view.py
-```
-
-The curve translation layer converts hourly predictions into:
-
-- baseload;
-- peakload;
-- offpeak;
-- peak/base spread.
-
-Peakload/offpeak use German local market time:
-
-```python
-local = pd.to_datetime(timestamps, utc=True).dt.tz_convert("Europe/Berlin")
-is_weekday = local.dt.weekday < 5
-is_peak_hour = (local.dt.hour >= 8) & (local.dt.hour < 20)
-```
-
-This is correct for German market interpretation and does not affect UTC timestamp joins.
-
-## Forward Prices and Benchmarks
-
-The assignment says forward price data is not required. A forward price is a traded price today for electricity delivered in a future period, such as German next-month baseload.
-
-Because reliable forward curve data is often paid/vendor data, the current implementation supports proxy benchmarks:
-
-- trailing realised day-ahead average;
-- same-month historical average;
-- manual curve price if the user has one.
-
-The report must be explicit:
-
-> In absence of public forward price data, trailing realised day-ahead average is used as a proxy benchmark. The same method can compare forecast fair value against traded prompt-week/month forwards if available.
-
-## Signal Logic
-
-The curve view computes:
-
-```text
-edge = forecast fair value - benchmark
-risk buffer = max(MAE, 0.5 * relevant tail MAE)
-confidence score = edge / risk buffer
-```
-
-Signals:
-
-- strong long;
-- long;
-- neutral;
-- short;
-- strong short.
-
-Desk action text is generated from the signal. Invalidation logic includes:
-
-- large load/wind/solar forecast revisions;
-- outages or plant returns;
-- flow disruptions;
-- market regime changes;
-- recent model error exceeding validation error;
-- liquidity or execution constraints.
-
-## Important Prompt-Month Interpretation
-
-This project should not claim to forecast a full future month from today using future lagged actual prices.
-
-There are two different meanings:
-
-1. Daily rolling day-ahead workflow:
-   - each day, forecast tomorrow;
-   - yesterday's realised price curve is known;
-   - prompt-week/month views are refreshed daily or historically simulated by aggregating rolling daily forecasts.
-
-2. One-shot next-month forecast:
-   - forecast the whole month from today;
-   - future `d-1`, `d-2`, `d-7` actual prices inside the month are not known;
-   - requires recursive predicted lags or removal of future-dependent lag features.
-
-The defensible interpretation for this prototype is the first one: daily rolling day-ahead fair-value generation. The curve translation demonstrates how such hourly/daily forecasts can be aggregated into curve-relevant views.
-
-This must be clearly stated in final materials.
-
-## AI-Accelerated Workflow
-
-File:
-
-```text
-pipeline_steps/generate_ai_commentary.py
-```
-
-The AI component:
-
-1. Reads `curve_view_summary.csv`.
-2. Builds a constrained prompt using only computed values.
-3. Calls the OpenAI Responses API using `OPENAI_API_KEY`.
-4. Logs the prompt.
-5. Logs the output.
-6. Logs failures.
-7. Writes `ai_commentary.md`.
-8. Writes deterministic fallback commentary if the API fails or quota is unavailable.
-
-Environment variables:
-
-```text
-OPENAI_API_KEY
-OPENAI_MODEL
-```
-
-This satisfies Task 4's minimum requirements. It is intentionally not a manual chat transcript.
-
-## Code Map
-
-Top-level pipeline scripts:
-
-- `pipeline_steps/build_dataset.py`: download, parse, combine, QA, feature table.
-- `pipeline_steps/validate_model.py`: rolling validation, final holdout, metrics, model artifacts.
-- `pipeline_steps/translate_curve_view.py`: curve fair-value translation and optional AI commentary.
-- `pipeline_steps/generate_ai_commentary.py`: standalone AI commentary generation.
-
-Data helpers:
-
-- `pipeline_helpers/entsoe_data/constants.py`
-- `pipeline_helpers/entsoe_data/date_windows.py`
-- `pipeline_helpers/entsoe_data/dataset_folders.py`
-- `pipeline_helpers/entsoe_data/entsoe_api.py`
-- `pipeline_helpers/entsoe_data/entsoe_xml_to_csv.py`
-- `pipeline_helpers/entsoe_data/combine_dataset_csvs.py`
-- `pipeline_helpers/entsoe_data/build_features.py`
-
-Modelling helpers:
-
-- `pipeline_helpers/modelling/constants.py`
-- `pipeline_helpers/modelling/metrics.py`
-- `pipeline_helpers/modelling/validation.py`
-- `pipeline_helpers/modelling/baseline_week_lag.py`
-- `pipeline_helpers/modelling/lear_model.py`
-- `pipeline_helpers/modelling/hist_gradient_boosting.py`
-- `pipeline_helpers/modelling/period_prediction.py`
-
-Curve translation helpers:
-
-- `pipeline_helpers/curve_translation/constants.py`
-- `pipeline_helpers/curve_translation/forecast_blocks.py`
-- `pipeline_helpers/curve_translation/curve_view.py`
-
-Period prediction and prediction reuse are handled in:
-
-- `pipeline_helpers/modelling/period_prediction.py`
-
-## Reproducible Run Order
-
-1. Create `.env` from `.env.example`.
-2. Fill `ENTSOE_API_KEY`.
-3. Optionally fill `OPENAI_API_KEY`.
-4. Build dataset:
+That yields **35 monthly folds** spanning Feb-2023 to Dec-2025. A fixed-length rolling
+window (not an expanding one) is used on purpose: an expanding window would
+under-train early folds and over-train late ones, confounding "model quality" with
+"training-set age". Monthly retraining also mirrors how a desk would actually operate,
+which is the *updateable MOS* idea from Wilson & Vallée made concrete.
+
+The engine: load features → infer complete calendar-month windows → build rolling
+train/test splits → loop each model's `build_param_grid` → score every fold →
+select the best parameters → save artifacts. A fold is only scored if its prediction
+coverage clears `MIN_PREDICTION_COVERAGE = 0.99`, so a fold with missing predictions
+cannot flatter the average. Selection ranks on `MODEL_SELECTION_METRICS = [mae,
+top_decile_mae, bottom_decile_mae, rmse]` — MAE first, with the tail metrics as
+tie-breakers so a model that wins on the mean but collapses on spikes does not get
+picked.
+
+Outputs per run (under `models/<dataset>/<run-name>/`):
+
+- `validation_summary.csv` — averaged metrics per parameter setting.
+- `validation_metrics.csv` — one row per parameter × fold.
+- `predictions.csv` — slim, out-of-sample predictions across **all** folds for the
+  selected parameters (`timestamp; local_hour; fold; y_true; y_pred; y_pred_lower;
+  y_pred_upper`).
+- `model.joblib` + `metadata.json` — the last-fold model and full run metadata.
+
+---
+
+## 8. Metrics: six, and only six
+
+`metrics.py` was deliberately trimmed from a sprawling 14 columns to the six that
+actually inform a decision (`constants.METRIC_NAMES`):
+
+| Metric | Meaning |
+| --- | --- |
+| `mae` | average absolute hourly error — the headline |
+| `rmse` | penalises large misses more heavily |
+| `bias` | average signed error (systematic over/under) |
+| `top_decile_mae` | accuracy in the highest-price (scarcity-adjacent) hours |
+| `bottom_decile_mae` | accuracy in the lowest-price / negative hours |
+| `scarcity_price_mae` | error above `SCARCITY_PRICE_THRESHOLD` (150 €/MWh) |
+
+MAE and RMSE satisfy the required level metrics; the decile and scarcity metrics are
+the required tail/stress metrics. The trimming was a clean-code decision: every column
+that nobody read (raw counts, redundant thresholds) was removed so the metric tables
+stay legible.
+
+---
+
+## 9. Forecast uncertainty: empirical P10–P90 residual bands
+
+A point forecast alone cannot drive a risk-aware trade, so `prediction_bands.py` adds
+an empirical band:
+
+- `residual_quantiles_by_hour(predictions, lower=0.10, upper=0.90)` computes, **per
+  local hour**, the 10th and 90th percentile of the validation residual
+  (`residual = y_true − y_pred`).
+- `add_prediction_bands(...)` applies those offsets to produce `y_pred_lower` and
+  `y_pred_upper`.
+- `band_coverage(...)` reports the share of actuals that fall inside the band.
+
+The band quantiles are `BAND_LOWER_QUANTILE = 0.10` and `BAND_UPPER_QUANTILE = 0.90`,
+so a well-calibrated band should cover ≈ 80% of outcomes.
+
+There is a subtle but important honesty point here. The bands are estimated **only
+from out-of-sample validation residuals**. For a forward delivery period the model
+retrains on that period's own window, and using that period's residuals to build its
+own band would be leakage — so forward periods fall back to a risk-buffer proxy
+(Section 11). This is the same information-cutoff discipline from Section 3, applied to
+uncertainty rather than to point forecasts.
+
+---
+
+## 10. Results, figures, and what they say
+
+The fully validated run is the headline LEAR model
+(`lear_model_lasso_raw__hourly__day_ahead_full`), LASSO, raw target, 35 folds:
+
+| Metric | Value (€/MWh) |
+| --- | --- |
+| MAE | 17.30 |
+| RMSE | 25.56 |
+| Bias | +0.41 |
+| Top-decile MAE | 30.34 |
+| Bottom-decile MAE | 20.10 |
+| Scarcity MAE | 35.27 |
+| **P10–P90 band coverage** | **79.9%** |
+
+The band coverage of 79.9% against an 80% target is essentially perfect calibration,
+which is a strong, concrete result to point at. The near-zero bias shows the model is
+not systematically long or short. The tail MAEs being larger than the headline MAE is
+exactly what theory predicts — spikes and troughs are harder — and is why the tail
+metrics are tracked separately rather than hidden inside the mean.
+
+`pipeline_steps/03_plot_validation.py` reads a run's `predictions.csv` and writes three
+figures to `outputs/figures/<run-name>/`:
+
+- `forecast_vs_actual.png` — forecast line, actuals, and the P10–P90 band as a shaded
+  region over a recent window.
+- `mae_by_hour.png` — MAE by hour of day, showing where the model is strong/weak.
+- `residual_distribution.png` — residual histogram with the band edges and coverage
+  annotated.
+
+These satisfy the "at least two figures" requirement and visually demonstrate the band
+calibration.
+
+---
+
+## 11. Prompt-curve translation: from hourly forecast to a tradable view
+
+This is Task 3, implemented in `pipeline_helpers/curve_translation/` and driven by
+`pipeline_steps/05_translate_curve_view.py`. It is where the forecast becomes a trade.
+
+### 11.1 Blocks
+
+`forecast_blocks.py` aggregates the hourly forecast into the four curve-relevant
+blocks: **baseload**, **peakload**, **offpeak**, and **peak/base spread**.
+Peak/offpeak is defined on German local market time (peak = weekday hours 08:00–20:00
+local), which is correct for German market interpretation and does not disturb the UTC
+joins. `calculate_block_band` aggregates the per-hour P10–P90 band up to a block-level
+band (returning "no band" for the spread block or when band columns are absent).
+
+### 11.2 Where the forecast comes from
+
+`period_prediction.py` resolves the forecast for a requested period from one of three
+sources, in priority order: an existing period prediction, the existing out-of-sample
+validation predictions, or a freshly retrained rolling window. Reusing validation
+predictions where possible is what lets a historical period carry a real empirical
+band; a retrained forward period cannot, and falls back to the proxy below.
+
+### 11.3 The band-driven signal
+
+`curve_view.py` was rewritten so the **band drives the signal** instead of a hand-tuned
+threshold. The old `confidence_score` / `risk_buffer` thresholds were removed entirely.
+The logic is now:
+
+- `derive_forecast_band` prefers the empirical `p10_p90_residual` band; if unavailable
+  (forward retrain), it falls back to a `risk_buffer_proxy` of
+  `forecast ± max(MAE, 0.5 × tail_metric)`.
+- `derive_signal` compares the benchmark to the band: benchmark **below** the band →
+  **Long**, **above** → **Short**, **inside** → **Neutral**. If the benchmark is more
+  than one band-width beyond the edge, the signal becomes **Strong**. It returns the
+  signal plus the margin beyond the edge.
+- `build_decision_rationale` writes a plain-language explanation of why.
+
+This is a genuine improvement over a fixed threshold: the conviction now scales with
+the model's own demonstrated uncertainty. A worked example makes the point — for
+November 2025 baseload, a symmetric risk-buffer proxy says **Long**, but the wider
+empirical P10–P90 band says **Neutral** because the trailing benchmark (83.27 €/MWh)
+sits *inside* the forecast band (78.98–131.49 €/MWh). The empirical band prevents an
+over-confident trade. That is the band earning its place.
+
+### 11.4 Benchmark, desk action, invalidation
+
+Forward price data is not required by the brief and is often paid, so the benchmark is
+a proxy chosen from: a trailing realised day-ahead average, a same-month historical
+average, or a manually supplied curve price. The report is explicit that this is a
+proxy, not a traded forward.
+
+Each curve view (`curve_view_report.md` + `curve_view_summary.csv`) states the fair
+value with its band, the benchmark and edge, the signal with its rationale, the
+**desk action** (e.g. "do not add directional exposure; monitor until the edge clears
+the risk buffer"), the model-error context (MAE + tail metric), and explicit
+**invalidation logic**: material load/wind/solar forecast revisions, outages or plant
+returns, flow disruptions, regime shifts, recent model error exceeding validation
+error, or liquidity/execution constraints. Together these satisfy the Task-3
+requirements for a concrete signal, a trading interpretation, and invalidation rules.
+
+`05_translate_curve_view.py` prints a descriptive log: a "Forecast source" section
+(model, source, retrained yes/no, whether an empirical band is available) and a
+per-block "Curve views" section (signal, fair value + band, benchmark, edge, margin,
+rationale, desk action, coverage).
+
+---
+
+## 12. AI-accelerated workflow
+
+Task 4 is `pipeline_steps/06_generate_ai_commentary.py`: a single programmatic LLM step,
+not a chat transcript. It reads a `curve_view_summary.csv`, builds a constrained prompt
+that is forbidden from inventing numbers (it may only use the computed values), calls
+the **OpenAI Responses API** with the key read from `OPENAI_API_KEY` (environment
+only), and writes `ai_commentary.md`. Every run logs the prompt, the output, and any
+failure as JSON under `ai_logs/`. If the API is unavailable or out of quota, a
+**deterministic fallback** writes a templated commentary from the same numbers, so the
+pipeline never breaks. The model name comes from `OPENAI_MODEL` (default
+`gpt-4.1-mini`). This meets the minimum AI requirements — called from code, prompts /
+outputs / failures logged, no committed secrets — and is intentionally kept minimal.
+
+---
+
+## 13. Code map (the structure of the whole code)
+
+Top-level pipeline steps (`pipeline_steps/`, numbered in run order):
+
+- `01_build_dataset.py` — download, parse, combine, QA, feature table.
+- `02_validate_model.py` — rolling validation, metrics, bands, artifacts.
+- `03_plot_validation.py` — the three validation figures.
+- `04_predict_day_ahead.py` — predict one delivery day as a 24-hour vector.
+- `05_translate_curve_view.py` — curve fair-value translation (+ optional commentary).
+- `06_generate_ai_commentary.py` — standalone LLM commentary.
+
+Data helpers (`pipeline_helpers/entsoe_data/`): `constants.py`, `date_windows.py`,
+`dataset_folders.py`, `entsoe_api.py`, `entsoe_xml_to_csv.py`,
+`combine_dataset_csvs.py`, `build_features.py`.
+
+Modelling helpers (`pipeline_helpers/modelling/`): `constants.py`, `metrics.py`,
+`prediction_bands.py`, `validation.py`, `baseline_week_lag.py`, `lear_model.py`,
+`boosted_trees.py`, `period_prediction.py`, plus `model_support.py`, `model_io.py`,
+`modelling_dataset.py`.
+
+Curve-translation helpers (`pipeline_helpers/curve_translation/`): `constants.py`,
+`forecast_blocks.py`, `curve_view.py`.
+
+The shape of the repository mirrors the red line: `entsoe_data` answers "what do we
+know and when", `modelling` answers "what is the price given that knowledge, and how
+uncertain are we", and `curve_translation` answers "what does the desk do about it".
+
+---
+
+## 14. Reproducible run order
 
 ```bash
-.venv/bin/python pipeline_steps/build_dataset.py \
+# 0. environment
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env        # fill ENTSOE_API_KEY (and optional OPENAI_API_KEY)
+
+# 1. build the dataset
+.venv/bin/python pipeline_steps/01_build_dataset.py \
   --datasets day_ahead_prices load_forecast solar_forecast wind_onshore_forecast wind_offshore_forecast \
-  --start 01-01-2021 \
-  --end 02-01-2026 \
-  --mode modelling
-```
+  --start 01-01-2021 --end 02-01-2026 --mode modelling
 
-5. Validate baseline:
-
-```bash
-.venv/bin/python pipeline_steps/validate_model.py \
+# 2. validate the baseline
+.venv/bin/python pipeline_steps/02_validate_model.py \
   --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
   --model baseline_week_lag
-```
 
-6. Validate LEAR-style model:
-
-```bash
-.venv/bin/python pipeline_steps/validate_model.py \
+# 3. validate the headline LEAR model
+.venv/bin/python pipeline_steps/02_validate_model.py \
   --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
-  --model lear_model \
-  --regularization lasso \
-  --target-transform raw
-```
+  --model lear_model --regularization lasso --target-transform raw \
+  --target hourly --feature-mode day_ahead_full
 
-7. Translate curve view:
+# 4. figures
+.venv/bin/python pipeline_steps/03_plot_validation.py \
+  --run-folder models/germany_modelling_2021_2026/lear_model_lasso_raw__hourly__day_ahead_full
 
-```bash
-.venv/bin/python pipeline_steps/translate_curve_view.py \
+# 5. curve translation
+.venv/bin/python pipeline_steps/05_translate_curve_view.py \
   --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
-  --start 01-11-2025 \
-  --end 01-12-2025 \
-  --model lear_model \
-  --regularization lasso \
-  --target-transform raw \
-  --block all \
-  --benchmark trailing_average
+  --start 01-11-2025 --end 01-12-2025 \
+  --model lear_model --regularization lasso --target-transform raw \
+  --target hourly --feature-mode period_hourly_safe --block all --benchmark trailing_average
+
+# 6. AI commentary
+.venv/bin/python pipeline_steps/06_generate_ai_commentary.py \
+  --summary outputs/curve_translation/germany_modelling_2021_2026/<run>/20251101_20251201/baseload/curve_view_summary.csv
 ```
 
-8. Generate AI commentary:
+---
 
-```bash
-.venv/bin/python pipeline_steps/generate_ai_commentary.py \
-  --summary data/processed/germany_modelling_2021_2026/lear_model_lasso_raw/curve_translation/20251101_20251201/baseload/curve_view_summary.csv
-```
+## 15. Scope, honest limitations, and future work
 
-## What Is Complete
+**What the prototype is.** A daily rolling day-ahead fair-value workflow. Prompt-week /
+prompt-month views are interpreted as rolling daily fair-value updates or historical
+simulations, *not* as a one-shot forecast that somehow knows future realised prices
+inside the delivery month.
 
-Completed or structurally implemented:
+**Honest limitations.**
 
-- ENTSO-E ingestion with secrets in `.env`.
-- Raw/interim/processed data layout.
-- XML parsing to standardized CSVs.
-- Hourly aggregation.
-- Forecast fundamental imputation.
-- QA report generation.
-- Baseline model.
-- LEAR-style regularised model.
-- HGB nonlinear benchmark.
-- Rolling validation and final holdout framework.
-- Metrics including tail/stress metrics.
-- Model artifact saving.
-- Prompt-curve translation.
-- Manual and proxy benchmarks.
-- Local-time peak/offpeak.
-- AI commentary code with prompt/output/failure logging and fallback.
+- Only the LEAR model is fully validated; the boosted-tree model is wired but its 35-
+  fold run was skipped, so it carries no headline number yet.
+- The actual-input oracle model from Section 3 is argued for but not implemented; the
+  oracle-vs-tradable gap is therefore described, not yet measured.
+- The benchmark is a realised-price proxy, not a traded forward curve.
+- Fundamentals are restricted to load/solar/wind by design — no fuel, carbon, or flows.
 
-## Critical Errors and Corrections Needed
+**Future work, with its sources.** Build separate fundamental forecasts (Maciejowska,
+Nitka & Weron); add probabilistic fundamental forecasts (Uniejewski & Ziel); run the
+boosted-tree and oracle comparisons; extend to multi-day-ahead horizons (Beran, Vogler
+& Weber). Each of these is a clean next step, not a gap in the current logic.
 
-### 1. Rolling price feature leakage
+---
 
-Current rolling price features use `price.shift(1)`. This leaks same-delivery-day prices for a full day-ahead forecast. Fix to `price.shift(24)` or remove these features.
+## 16. Closing position
 
-Priority: highest.
+> This is a daily rolling German day-ahead price forecasting prototype. It uses public
+> ex-ante forecast fundamentals (load, wind, solar), lagged historical prices, and
+> calendar features to produce hourly price forecasts with calibrated P10–P90
+> uncertainty bands. Those forecasts are aggregated into curve-relevant fair-value
+> views, and the band — not a hand-tuned threshold — drives a long / neutral / short
+> signal with an explicit desk action and invalidation logic. Prompt-week / month views
+> are rolling daily updates, never one-shot forecasts of future realised prices.
 
-### 2. Forecast contract must be explicit
+That framing is internally consistent, matches the assignment, respects the data that
+is actually available before the auction, and is grounded throughout in the electricity
+price forecasting literature reviewed above.
 
-The project must state that it is a daily rolling day-ahead workflow, not a one-shot full next-month forecast. Otherwise daily lag features become invalid for prompt-month interpretation.
+---
 
-Priority: highest.
+## References
 
-### 3. Rebuild features after feature changes
+1. Marzban, Sandgathe & Kalnay (2006). *MOS, Perfect Prog, and Reanalysis.* https://faculty.washington.edu/marzban/mos.pdf
+2. Brunet, Verret & Yacowar (1988). *An Objective Comparison of MOS and Perfect Prog Systems.* https://journals.ametsoc.org/view/journals/wefo/3/4/1520-0434_1988_003_0273_aocomo_2_0_co_2.xml
+3. Wilson & Vallée (2003). *The Canadian Updateable MOS (UMOS) System: Validation against Perfect Prog.* https://journals.ametsoc.org/view/journals/wefo/18/2/1520-0434_2003_018_0288_tcumos_2_0_co_2.xml
+4. Fay & Ringwood (2010). *On the Influence of Weather Forecast Errors in Short-Term Load Forecasting Models.* https://ee.maynoothuniversity.ie/jringwood/Respubs/J156DFPS.pdf
+5. Wang et al. (2020). *Building Thermal Load Prediction through Shallow ML and Deep Learning.* https://www.sciencedirect.com/science/article/am/pii/S0306261920301951
+6. Runge & Saloux (2023). *A Comparison of Prediction and Forecasting AI Models for District Heating Demand.* https://www.sciencedirect.com/science/article/abs/pii/S0360544223000555
+7. Fildes, Randall & Stubbs (1997). *One Day Ahead Demand Forecasting in the Utility Industries.* https://www.jstor.org/stable/3009939
+8. Maciejowska, Nitka & Weron (2021). *Enhancing Load, Wind and Solar Generation for Day-Ahead Forecasting of Electricity Prices.* https://www.sciencedirect.com/science/article/abs/pii/S014098832100178X
+9. Uniejewski & Ziel (2025). *Probabilistic Forecasts of Load, Solar and Wind for Electricity Price Forecasting.* https://arxiv.org/abs/2501.06180
+10. Kulakov & Ziel (2019). *The Impact of Renewable Energy Forecasts on Intraday Electricity Prices.* https://arxiv.org/abs/1903.09641
+11. Goodarzi, Perera & Bunn (2019). *The Impact of Renewable Energy Forecast Errors on Imbalance Volumes and Electricity Spot Prices.* https://www.sciencedirect.com/science/article/abs/pii/S0301421519304057
+12. Beran, Vogler & Weber (2021). *Multi-Day-Ahead Electricity Price Forecasting: Fundamental, Econometric and Hybrid Models.* https://ideas.repec.org/p/dui/wpaper/2102.html
+13. Lago, Marcjasz, De Schutter & Weron (2021). *Forecasting Day-Ahead Electricity Prices: A Review of State-of-the-Art Algorithms, Best Practices and an Open-Access Benchmark.* https://arxiv.org/abs/2008.08004
+14. Weron (2014). *Electricity Price Forecasting: A Review of the State-of-the-Art with a Look into the Future.* https://doi.org/10.1016/j.ijforecast.2014.08.008
+15. Ziel (2016). *Forecasting Electricity Spot Prices using Lasso: On Capturing the Autoregressive Intraday Structure.* https://arxiv.org/abs/1509.01966
+16. Ziel & Weron (2018). *Day-Ahead Electricity Price Forecasting with High-Dimensional Structures: Univariate vs. Multivariate.* https://arxiv.org/abs/1805.06649
+17. Uniejewski & Weron (2018). *Efficient Forecasting of Electricity Spot Prices with Expert and LASSO Models.* https://www.mdpi.com/1996-1073/11/8/2039
+18. Uniejewski (2024). *Regularization for Electricity Price Forecasting.* https://arxiv.org/abs/2404.03968
+19. Xie, Chen, Lai, Ma & Huang (2022). *Forecasting the Clearing Price in the Day-Ahead Spot Market using eXtreme Gradient Boosting.* https://link.springer.com/article/10.1007/s00202-021-01410-6
+20. *Data-driven Day-Ahead Market Prices Forecasting: A Focus on Short Training Set Windows* (2025). https://arxiv.org/html/2506.10536v1
+21. Lago, De Ridder & De Schutter (2018). *Forecasting Spot Electricity Prices using Deep Learning.* https://www.sciencedirect.com/science/article/pii/S030626191830196X
+22. epftoolbox — LEAR reference implementation. https://epftoolbox.readthedocs.io/en/latest/modules/lear_model.html · https://github.com/jeslago/epftoolbox
 
-The code now expects local calendar features and `d-3` curves. Existing feature CSVs created before these changes are stale. Rebuild the feature dataset before running validation.
-
-Priority: high.
-
-### 4. Re-run all validation after leakage fix
-
-Any MAE values observed before fixing `shift(1)` rolling leakage should be considered provisional. Rebuild features and rerun baseline, LEAR, and HGB validation.
-
-Priority: high.
-
-### 5. Avoid overstating prompt-month live capability
-
-The current curve translation can aggregate historical period predictions. It does not yet implement recursive one-shot next-month forecasting. The write-up must not imply that future month prices can be forecast from today using future lagged actuals.
-
-Priority: high.
-
-### 6. Forward benchmark limitation
-
-The default benchmark is not a real forward price. It is a realised day-ahead proxy. The report must say this clearly.
-
-Priority: medium.
-
-### 7. Local-time features are safe only because full pivots remain UTC
-
-Adding local calendar features is fine. Rebuilding full local daily price-curve pivots would reintroduce DST missing-hour problems unless 23/25-hour days are explicitly handled.
-
-Priority: medium.
-
-## Suggested Next Steps
-
-1. Fix rolling price features to use `price.shift(24)` or remove them.
-2. Rebuild `germany_model_features.csv`.
-3. Rerun baseline validation.
-4. Rerun LEAR validation.
-5. Rerun HGB validation only if time allows.
-6. Regenerate curve translation outputs.
-7. Regenerate AI commentary or fallback.
-8. Update final report with post-fix metrics.
-
-## Final Position
-
-The project is salvageable and structurally strong, but the current performance numbers should not be presented as final until the rolling price leakage is fixed. The correct framing is:
-
-> This is a daily rolling German day-ahead price forecasting prototype. It uses public ex-ante forecast fundamentals, lagged historical prices, and calendar features to produce hourly price forecasts. These forecasts are then aggregated into curve-relevant fair-value views. Prompt-week/month views are interpreted as rolling daily fair-value updates or historical simulations, not one-shot forecasts that know future realised lagged prices.
-
-That framing is consistent with the assignment, the data available, and the literature reviewed in `session.md`.
+*Data source: ENTSO-E Transparency Platform (https://web-api.tp.entsoe.eu/api). Token guide: https://transparencyplatform.zendesk.com/hc/en-us/articles/12845911031188-How-to-get-security-token.*

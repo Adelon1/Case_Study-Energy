@@ -1,17 +1,17 @@
 """Pipeline step: run rolling validation and save compact model artifacts.
 
 Example:
-    .venv/bin/python pipeline_steps/validate_model.py \
+    .venv/bin/python pipeline_steps/02_validate_model.py \
       --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
       --model baseline_week_lag
 
-    .venv/bin/python pipeline_steps/validate_model.py \
+    .venv/bin/python pipeline_steps/02_validate_model.py \
       --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
       --model lear_model \
       --regularization elasticnet \
       --target-transform raw
 
-    .venv/bin/python pipeline_steps/validate_model.py \
+    .venv/bin/python pipeline_steps/02_validate_model.py \
       --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
       --model boosted_trees
       

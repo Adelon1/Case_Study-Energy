@@ -1,226 +1,91 @@
 """LEAR-style regularised linear model.
 
-This model estimates 24 separate hourly regressions. Each hour gets its own
-LASSO or ElasticNet model, using the same feature set but different fitted
-coefficients.
+LEAR fits one regularised linear regression per delivery hour. Every hour shares
+the same leakage-safe feature set but learns its own coefficients and its own
+regularisation strength: each hour selects its penalty by time-series
+cross-validation, so volatile peak hours and calm night hours are tuned
+independently instead of sharing one global alpha.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
 import pandas as pd
-from sklearn.linear_model import ElasticNet, Lasso, Ridge
+from sklearn.linear_model import ElasticNetCV, LassoCV, RidgeCV
+from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from pipeline_helpers.modelling import constants
-from pipeline_helpers.modelling.feature_sets import get_hourly_feature_columns
+from pipeline_helpers.modelling import constants, model_support
 
 
 MODEL_NAME = "lear_model"
-HOUR_MODEL_COLUMN = "local_hour"
+HOUR_COLUMN = "local_hour"
 SUPPORTED_REGULARIZATION = {"lasso", "elasticnet", "ridge"}
-SUPPORTED_TARGET_TRANSFORMS = {"raw", "asinh"}
 
 
 @dataclass(frozen=True)
 class LearModelState:
-    """Fitted regularised models and the feature columns they expect."""
+    """Fitted pipelines plus the per-hour choices behind them."""
 
     hourly_models: dict[int, Pipeline]
     pooled_model: Pipeline | None
     feature_columns: list[str]
     target_transform: str
-    n_train_rows_by_hour: dict[int, int]
+    alpha_by_hour: dict[int, float]
     fitted_hours: list[int]
+    n_train_rows_by_hour: dict[int, int]
 
 
-def build_param_grid(
-    regularization: str = "lasso",
-    target_transform: str = "raw",
-) -> list[dict[str, object]]:
-    """Build LEAR hyperparameter grid from user-level model choices."""
-
-    validate_model_choices(regularization, target_transform)
-
-    if regularization in {"lasso", "ridge"}:
-        return [
-            {
-                "regularization": regularization,
-                "target_transform": target_transform,
-                "alpha": alpha,
-            }
-            for alpha in constants.LEAR_ALPHA_GRID
-        ]
-
-    valid_l1_ratios = [
-        l1_ratio
-        for l1_ratio in constants.LEAR_L1_RATIO_GRID
-        if 0 < l1_ratio < 1
-    ]
-    if not valid_l1_ratios:
-        raise ValueError("ElasticNet needs at least one l1_ratio strictly between 0 and 1.")
-
-    return [
-        {
-            "regularization": "elasticnet",
-            "target_transform": target_transform,
-            "alpha": alpha,
-            "l1_ratio": l1_ratio,
-        }
-        for alpha in constants.LEAR_ALPHA_GRID
-        for l1_ratio in valid_l1_ratios
-    ]
-
-
-def output_folder_name(
-    regularization: str = "lasso",
-    target_transform: str = "raw",
-) -> str:
-    """Name output folders by model family and target transform."""
-
-    validate_model_choices(regularization, target_transform)
-    return f"{MODEL_NAME}_{regularization}_{target_transform}"
-
-
-def validate_model_choices(regularization: str, target_transform: str) -> None:
-    """Validate user-level LEAR choices."""
-
-    if regularization not in SUPPORTED_REGULARIZATION:
-        raise ValueError(f"Unsupported regularization: {regularization}")
-    if target_transform not in SUPPORTED_TARGET_TRANSFORMS:
-        raise ValueError(f"Unsupported target transform: {target_transform}")
-
-
-def transform_target(y: pd.Series, target_transform: str) -> np.ndarray:
-    """Transform the training target."""
-
-    if target_transform == "raw":
-        return y.to_numpy()
-    if target_transform == "asinh":
-        return np.arcsinh(y.to_numpy())
-    raise ValueError(f"Unsupported target transform: {target_transform}")
-
-
-def inverse_transform_prediction(y_pred: np.ndarray, target_transform: str) -> np.ndarray:
-    """Map model predictions back to EUR/MWh."""
-
-    if target_transform == "raw":
-        return y_pred
-    if target_transform == "asinh":
-        return np.sinh(y_pred)
-    raise ValueError(f"Unsupported target transform: {target_transform}")
-
-
-def selected_feature_columns(train_data: pd.DataFrame, params: dict[str, object]) -> list[str]:
-    """Return externally selected features or the default day-ahead feature set."""
-
-    feature_columns = params.get("_feature_columns") or params.get("feature_columns")
-    if feature_columns is None:
-        feature_columns = get_hourly_feature_columns(
-            train_data,
-            model_name=MODEL_NAME,
-            feature_mode="day_ahead_full",
-            period_days=1,
-        )
-    feature_columns = list(feature_columns)
-    missing_columns = [column for column in feature_columns if column not in train_data.columns]
-    if missing_columns:
-        missing_preview = ", ".join(missing_columns[:10])
-        if len(missing_columns) > 10:
-            missing_preview = f"{missing_preview}, ..."
-        raise ValueError(
-            "Configured LEAR features are missing from the feature table: "
-            f"{missing_preview}"
-        )
-    return feature_columns
-
-
-def build_regressor(params: dict[str, object]):
-    """Create the regularised linear estimator requested by params."""
-
-    regularization = str(params["regularization"])
-    alpha = float(params["alpha"])
-
-    if regularization == "lasso":
-        return Lasso(alpha=alpha, max_iter=50000, tol=1e-4, selection="cyclic")
-    if regularization == "ridge":
-        return Ridge(alpha=alpha)
-    if regularization == "elasticnet":
-        return ElasticNet(
-            alpha=alpha,
-            l1_ratio=float(params["l1_ratio"]),
-            max_iter=50000,
-            tol=1e-4,
-            selection="cyclic",
-        )
-    raise ValueError(f"Unsupported regularization: {regularization}")
+# --- Model contract: train and predict -------------------------------------
 
 
 def train(train_data: pd.DataFrame, params: dict[str, object]) -> LearModelState:
-    """Fit one regularised regression per hour, or one pooled model without hour rows."""
+    """Fit one cross-validated regression per hour, or one pooled model.
 
-    target_transform = str(params["target_transform"])
-    feature_columns = selected_feature_columns(train_data, params)
-    if not feature_columns:
-        raise ValueError("No configured LEAR feature columns are available.")
+    Hourly rows (Option A) carry a ``local_hour`` column and get 24 independent
+    models. Period-average rows (Option B) have no hour column and get a single
+    pooled model.
+    """
 
-    if HOUR_MODEL_COLUMN not in train_data.columns:
-        modelling_data = train_data.dropna(subset=[constants.TARGET_COLUMN, *feature_columns])
-        if modelling_data.empty:
-            raise ValueError("LEAR pooled model has no complete training rows.")
-        estimator = Pipeline(
-            [
-                ("scaler", StandardScaler()),
-                ("regressor", build_regressor(params)),
-            ]
-        )
-        estimator.fit(
-            modelling_data[feature_columns],
-            transform_target(modelling_data[constants.TARGET_COLUMN], target_transform),
-        )
-        return LearModelState(
-            hourly_models={},
-            pooled_model=estimator,
-            feature_columns=feature_columns,
-            target_transform=target_transform,
-            n_train_rows_by_hour={-1: len(modelling_data)},
-            fitted_hours=[],
-        )
+    regularization = str(params.get("regularization", "lasso"))
+    target_transform = str(params.get("target_transform", "raw"))
+    validate_model_choices(regularization, target_transform)
+
+    target_column = model_support.resolve_target_column(params)
+    feature_columns = model_support.resolve_feature_columns(train_data, params)
+
+    if HOUR_COLUMN not in train_data.columns:
+        return _train_pooled(train_data, params, feature_columns, target_column, target_transform)
 
     hourly_models: dict[int, Pipeline] = {}
+    alpha_by_hour: dict[int, float] = {}
     n_train_rows_by_hour: dict[int, int] = {}
     for hour in range(24):
-        hour_data = train_data.loc[train_data[HOUR_MODEL_COLUMN] == hour]
-        modelling_data = hour_data.dropna(subset=[constants.TARGET_COLUMN, *feature_columns])
-        n_train_rows_by_hour[hour] = len(modelling_data)
-        if modelling_data.empty:
-            continue
-
-        estimator = Pipeline(
-            [
-                ("scaler", StandardScaler()),
-                ("regressor", build_regressor(params)),
-            ]
+        rows = train_data.loc[train_data[HOUR_COLUMN] == hour].dropna(
+            subset=[target_column, *feature_columns]
         )
-        x_train = modelling_data[feature_columns]
-        y_train = transform_target(modelling_data[constants.TARGET_COLUMN], target_transform)
-        estimator.fit(x_train, y_train)
-        hourly_models[hour] = estimator
+        n_train_rows_by_hour[hour] = len(rows)
+        if rows.empty:
+            raise ValueError(f"LEAR has no complete training rows for hour {hour}.")
 
-    missing_hours = sorted(set(range(24)) - set(hourly_models))
-    if missing_hours:
-        raise ValueError(f"LEAR did not fit models for hours: {missing_hours}")
+        model = _build_pipeline(params)
+        model.fit(
+            rows[feature_columns],
+            model_support.transform_target(rows[target_column], target_transform),
+        )
+        hourly_models[hour] = model
+        alpha_by_hour[hour] = float(model.named_steps["regressor"].alpha_)
 
     return LearModelState(
         hourly_models=hourly_models,
         pooled_model=None,
         feature_columns=feature_columns,
         target_transform=target_transform,
-        n_train_rows_by_hour=n_train_rows_by_hour,
+        alpha_by_hour=alpha_by_hour,
         fitted_hours=sorted(hourly_models),
+        n_train_rows_by_hour=n_train_rows_by_hour,
     )
 
 
@@ -229,41 +94,146 @@ def predict(
     test_data: pd.DataFrame,
     _params: dict[str, object],
 ) -> pd.Series:
-    """Predict each test row with the model fitted for its delivery hour."""
+    """Predict each row with the model fitted for its delivery hour."""
 
     predictions = pd.Series(index=test_data.index, dtype=float)
+
     if model_state.pooled_model is not None:
-        complete_feature_mask = test_data[model_state.feature_columns].notna().all(axis=1)
-        if complete_feature_mask.any():
-            prediction_index = test_data.loc[complete_feature_mask].index
-            transformed_prediction = model_state.pooled_model.predict(
-                test_data.loc[prediction_index, model_state.feature_columns]
-            )
-            predictions.loc[prediction_index] = inverse_transform_prediction(
-                transformed_prediction,
-                model_state.target_transform,
-            )
+        _predict_into(predictions, model_state, model_state.pooled_model, test_data)
         return predictions
 
-    if HOUR_MODEL_COLUMN not in test_data.columns:
-        raise ValueError(f"LEAR needs hourly split column: {HOUR_MODEL_COLUMN}")
+    if HOUR_COLUMN not in test_data.columns:
+        raise ValueError(f"LEAR needs the hourly split column: {HOUR_COLUMN}")
 
-    for hour, estimator in model_state.hourly_models.items():
-        hour_mask = test_data[HOUR_MODEL_COLUMN] == hour
-        if not hour_mask.any():
-            continue
-
-        hour_data = test_data.loc[hour_mask]
-        complete_feature_mask = hour_data[model_state.feature_columns].notna().all(axis=1)
-        if not complete_feature_mask.any():
-            continue
-
-        prediction_index = hour_data.loc[complete_feature_mask].index
-        x_test = hour_data.loc[complete_feature_mask, model_state.feature_columns]
-        transformed_prediction = estimator.predict(x_test)
-        predictions.loc[prediction_index] = inverse_transform_prediction(
-            transformed_prediction,
-            model_state.target_transform,
-        )
-
+    for hour, model in model_state.hourly_models.items():
+        hour_rows = test_data.loc[test_data[HOUR_COLUMN] == hour]
+        if not hour_rows.empty:
+            _predict_into(predictions, model_state, model, hour_rows)
     return predictions
+
+
+# --- Hyperparameters and naming --------------------------------------------
+
+
+def build_param_grid(
+    regularization: str = "lasso",
+    target_transform: str = "raw",
+    **_unused_options,
+) -> list[dict[str, object]]:
+    """Return one configuration per family; alpha is tuned per hour in ``train``."""
+
+    validate_model_choices(regularization, target_transform)
+    return [{"regularization": regularization, "target_transform": target_transform}]
+
+
+def output_folder_name(
+    regularization: str = "lasso",
+    target_transform: str = "raw",
+    **_unused_options,
+) -> str:
+    """Name output folders by regularisation family and target transform."""
+
+    validate_model_choices(regularization, target_transform)
+    return f"{MODEL_NAME}_{regularization}_{target_transform}"
+
+
+def validate_model_choices(regularization: str, target_transform: str) -> None:
+    """Reject unsupported regularisation families or target transforms early."""
+
+    if regularization not in SUPPORTED_REGULARIZATION:
+        raise ValueError(f"Unsupported regularization: {regularization}")
+    if target_transform not in model_support.SUPPORTED_TARGET_TRANSFORMS:
+        raise ValueError(f"Unsupported target transform: {target_transform}")
+
+
+# --- Internals -------------------------------------------------------------
+
+
+def _train_pooled(
+    train_data: pd.DataFrame,
+    params: dict[str, object],
+    feature_columns: list[str],
+    target_column: str,
+    target_transform: str,
+) -> LearModelState:
+    """Fit a single model when the data has no per-hour split (Option B)."""
+
+    rows = train_data.dropna(subset=[target_column, *feature_columns])
+    if rows.empty:
+        raise ValueError("LEAR pooled model has no complete training rows.")
+
+    model = _build_pipeline(params)
+    model.fit(
+        rows[feature_columns],
+        model_support.transform_target(rows[target_column], target_transform),
+    )
+    return LearModelState(
+        hourly_models={},
+        pooled_model=model,
+        feature_columns=feature_columns,
+        target_transform=target_transform,
+        alpha_by_hour={-1: float(model.named_steps["regressor"].alpha_)},
+        fitted_hours=[],
+        n_train_rows_by_hour={-1: len(rows)},
+    )
+
+
+def _predict_into(
+    predictions: pd.Series,
+    model_state: LearModelState,
+    model: Pipeline,
+    rows: pd.DataFrame,
+) -> None:
+    """Predict the rows with complete features and write them into ``predictions``."""
+
+    complete = rows[model_state.feature_columns].notna().all(axis=1)
+    if not complete.any():
+        return
+
+    usable_index = rows.loc[complete].index
+    raw_prediction = model.predict(rows.loc[usable_index, model_state.feature_columns])
+    predictions.loc[usable_index] = model_support.inverse_transform_prediction(
+        raw_prediction,
+        model_state.target_transform,
+    )
+
+
+def _build_pipeline(params: dict[str, object]) -> Pipeline:
+    """Standard-scale features, then fit a cross-validated linear regressor."""
+
+    return Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            ("regressor", _build_cross_validated_regressor(params)),
+        ]
+    )
+
+
+def _build_cross_validated_regressor(params: dict[str, object]):
+    """Create the per-hour regressor that selects its own alpha by time-series CV."""
+
+    regularization = str(params.get("regularization", "lasso"))
+    splitter = TimeSeriesSplit(n_splits=constants.LEAR_CV_SPLITS)
+
+    if regularization == "lasso":
+        return LassoCV(
+            alphas=constants.LEAR_ALPHA_PATH_LENGTH,
+            cv=splitter,
+            max_iter=50000,
+            tol=1e-4,
+            selection="random",
+            random_state=0,
+        )
+    if regularization == "ridge":
+        return RidgeCV(alphas=constants.RIDGE_ALPHA_GRID, cv=splitter)
+    if regularization == "elasticnet":
+        return ElasticNetCV(
+            l1_ratio=constants.LEAR_L1_RATIO_GRID,
+            alphas=constants.LEAR_ALPHA_PATH_LENGTH,
+            cv=splitter,
+            max_iter=50000,
+            tol=1e-4,
+            selection="random",
+            random_state=0,
+        )
+    raise ValueError(f"Unsupported regularization: {regularization}")

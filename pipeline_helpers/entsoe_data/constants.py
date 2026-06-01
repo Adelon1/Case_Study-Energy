@@ -66,18 +66,6 @@ ENTSOE_DATASETS: dict[str, EntsoeDatasetRequest] = {
         output_column="load_forecast_mw",
         required_time_series_tags={},
     ),
-    "load_actual": EntsoeDatasetRequest(
-        name="load_actual",
-        description="Actual total load for DE-LU. Use only lagged values in live forecasts.",
-        params={
-            "documentType": "A65",
-            "processType": "A16",
-            "outBiddingZone_Domain": GERMANY_LUXEMBOURG_BIDDING_ZONE_EIC,
-        },
-        value_tag="quantity",
-        output_column="load_actual_mw",
-        required_time_series_tags={},
-    ),
     "solar_forecast": EntsoeDatasetRequest(
         name="solar_forecast",
         description="Day-ahead solar generation forecast for DE-LU.",

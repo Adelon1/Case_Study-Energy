@@ -5,7 +5,7 @@ the day-ahead forecast object explicit: one command returns the full delivery
 day, not one hour at a time.
 
 Example:
-    .venv/bin/python pipeline_steps/predict_day_ahead.py \
+    .venv/bin/python pipeline_steps/04_predict_day_ahead.py \
       --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
       --delivery-day 01-12-2025 \
       --model lear_model \

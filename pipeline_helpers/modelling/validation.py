@@ -1,9 +1,8 @@
-"""Rolling-window validation and final holdout testing for model modules."""
+"""Rolling-window validation helpers for model modules."""
 
 from __future__ import annotations
 
 import json
-import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -111,17 +110,16 @@ def build_validation_windows(
     test_months: int = constants.TEST_MONTHS,
     step_months: int = constants.STEP_MONTHS,
 ) -> list[TimeWindow]:
-    """Build rolling windows while reserving the last test window as holdout."""
+    """Build rolling train/test windows across the complete modelling range."""
 
     data_begin, data_end = infer_complete_month_range(table)
-    final_holdout_begin = add_months(data_end, -test_months)
     train_begin = data_begin
     windows: list[TimeWindow] = []
 
     while True:
         train_end = add_months(train_begin, train_months)
         test_end = add_months(train_end, test_months)
-        if test_end > final_holdout_begin:
+        if test_end > data_end:
             break
         windows.append(
             TimeWindow(
@@ -140,27 +138,6 @@ def build_validation_windows(
     return windows
 
 
-def build_final_holdout_window(
-    table: pd.DataFrame,
-    train_months: int = constants.TRAIN_MONTHS,
-    test_months: int = constants.TEST_MONTHS,
-) -> TimeWindow:
-    """Build the final untouched holdout split from the end of the data."""
-
-    data_begin, data_end = infer_complete_month_range(table)
-    test_begin = add_months(data_end, -test_months)
-    train_begin = add_months(test_begin, -train_months)
-    if train_begin < data_begin:
-        raise ValueError("Not enough history before the final holdout window.")
-
-    return TimeWindow(
-        train_begin=train_begin,
-        train_end=test_begin,
-        test_begin=test_begin,
-        test_end=data_end,
-    )
-
-
 def params_to_string(params: dict[str, object]) -> str:
     """Serialize model parameters for result tables."""
 
@@ -173,9 +150,7 @@ def get_model_param_grid(
 ) -> list[dict[str, object]]:
     """Return the parameter grid declared by a model module."""
 
-    if hasattr(model_module, "build_param_grid"):
-        return model_module.build_param_grid(**(model_options or {}))
-    return model_module.PARAM_GRID
+    return model_module.build_param_grid(**(model_options or {}))
 
 
 def average_metrics_by_params(metrics: pd.DataFrame) -> pd.DataFrame:
@@ -216,6 +191,7 @@ def evaluate_model_on_window(
     split_name: str,
     fold_number: int,
     feature_columns: list[str] | None = None,
+    target_column: str = constants.TARGET_COLUMN,
 ) -> tuple[dict[str, object], pd.DataFrame]:
     """Train and score one model configuration on one time window."""
 
@@ -227,6 +203,7 @@ def evaluate_model_on_window(
         split_name=split_name,
         fold_number=fold_number,
         feature_columns=feature_columns,
+        target_column=target_column,
     )
     prediction_coverage = float(result.metric_row["prediction_coverage"])
 
@@ -249,6 +226,7 @@ def train_predict_window(
     split_name: str,
     fold_number: int,
     feature_columns: list[str] | None = None,
+    target_column: str = constants.TARGET_COLUMN,
 ) -> TrainPredictResult:
     """Train one model on one window and return metrics plus predictions."""
 
@@ -257,15 +235,12 @@ def train_predict_window(
     model_params = params.copy()
     if feature_columns is not None:
         model_params["_feature_columns"] = feature_columns
+    model_params["_target_column"] = target_column
 
-    train_started = time.perf_counter()
     model_state = model_module.train(train_data, model_params)
-    train_seconds = time.perf_counter() - train_started
 
-    predict_started = time.perf_counter()
     y_pred = model_module.predict(model_state, test_data, model_params)
-    predict_seconds = time.perf_counter() - predict_started
-    y_true = test_data[constants.TARGET_COLUMN]
+    y_true = test_data[target_column]
     metrics = calculate_metrics(y_true, y_pred)
     n_test_rows = len(test_data)
     n_predicted_rows = int(y_pred.notna().sum())
@@ -283,9 +258,6 @@ def train_predict_window(
         "n_test_rows": n_test_rows,
         "n_predicted_rows": n_predicted_rows,
         "prediction_coverage": prediction_coverage,
-        "train_seconds": train_seconds,
-        "predict_seconds": predict_seconds,
-        "total_seconds": train_seconds + predict_seconds,
         **metrics,
     }
 
@@ -300,6 +272,8 @@ def train_predict_window(
             "y_pred": y_pred,
         }
     )
+    if "local_hour" in test_data.columns:
+        predictions["local_hour"] = test_data["local_hour"]
     return TrainPredictResult(
         model_state=model_state,
         metric_row=metric_row,
@@ -316,6 +290,7 @@ def run_rolling_validation(
     test_months: int = constants.TEST_MONTHS,
     step_months: int = constants.STEP_MONTHS,
     feature_columns: list[str] | None = None,
+    target_column: str = constants.TARGET_COLUMN,
 ) -> ValidationResult:
     """Tune a model module over its parameter grid using rolling validation."""
 
@@ -336,6 +311,7 @@ def run_rolling_validation(
                 split_name="validation",
                 fold_number=fold_number,
                 feature_columns=feature_columns,
+                target_column=target_column,
             )
             metric_rows.append(metric_row)
             prediction_tables.append(predictions)
@@ -345,26 +321,3 @@ def run_rolling_validation(
     predictions = pd.concat(prediction_tables, ignore_index=True)
 
     return ValidationResult(metrics=metrics, predictions=predictions, best_params=best_params)
-
-
-def run_final_holdout_test(
-    table: pd.DataFrame,
-    model_module: ModuleType,
-    params: dict[str, object],
-    train_months: int = constants.TRAIN_MONTHS,
-    test_months: int = constants.TEST_MONTHS,
-    feature_columns: list[str] | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Evaluate chosen parameters on the untouched final holdout window."""
-
-    window = build_final_holdout_window(table, train_months, test_months)
-    metric_row, predictions = evaluate_model_on_window(
-        table,
-        model_module,
-        params,
-        window,
-        split_name="final_holdout",
-        fold_number=1,
-        feature_columns=feature_columns,
-    )
-    return pd.DataFrame([metric_row]), predictions

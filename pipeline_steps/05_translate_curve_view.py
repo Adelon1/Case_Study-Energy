@@ -1,7 +1,7 @@
 """Pipeline step: translate hourly forecasts into a prompt-curve trading view.
 
 Example:
-    .venv/bin/python pipeline_steps/translate_curve_view.py \
+    .venv/bin/python pipeline_steps/05_translate_curve_view.py \
       --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
       --start 01-10-2025 \
       --end 01-01-2026 \
@@ -12,7 +12,7 @@ Example:
       --benchmark trailing_average
 
 Interactive mode:
-    .venv/bin/python pipeline_steps/translate_curve_view.py --interactive
+    .venv/bin/python pipeline_steps/05_translate_curve_view.py --interactive
 """
 
 from __future__ import annotations
@@ -233,7 +233,7 @@ def generate_ai_commentary(summary_path: Path) -> None:
     subprocess.run(
         [
             sys.executable,
-            "pipeline_steps/generate_ai_commentary.py",
+            "pipeline_steps/06_generate_ai_commentary.py",
             "--summary",
             str(summary_path),
         ],

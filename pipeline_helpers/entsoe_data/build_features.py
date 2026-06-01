@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import holidays
 import numpy as np
 import pandas as pd
 
@@ -74,39 +75,46 @@ def add_fundamental_features(table: pd.DataFrame) -> pd.DataFrame:
     return features
 
 
-def add_calendar_features(table: pd.DataFrame) -> pd.DataFrame:
-    """Add UTC and German local calendar features.
+def local_german_holiday_flag(timestamp_local: pd.Series) -> pd.Series:
+    """Flag German nationwide public holidays on the local delivery date.
 
-    UTC remains the canonical timestamp. Local calendar features are added for
-    modelling because German power demand, solar shape, and weekday behaviour
-    follow German market time. Full daily lag curves remain UTC-based elsewhere
-    to avoid DST days with 23 or 25 local hours.
+    Holidays are evaluated on the German local calendar date so the late-evening
+    UTC hours of a holiday still map to the correct German day. Only nationwide
+    holidays are used to avoid region-specific noise.
+    """
+
+    local_dates = timestamp_local.dt.date
+    valid_years = timestamp_local.dt.year.dropna()
+    if valid_years.empty:
+        return pd.Series(0, index=timestamp_local.index, dtype=int)
+
+    year_range = range(int(valid_years.min()), int(valid_years.max()) + 1)
+    german_holidays = holidays.Germany(years=year_range)
+    flags = [0 if date is None else int(date in german_holidays) for date in local_dates]
+    return pd.Series(flags, index=timestamp_local.index, dtype=int)
+
+
+def add_calendar_features(table: pd.DataFrame) -> pd.DataFrame:
+    """Add German local calendar features.
+
+    The canonical join key stays UTC, but every modelling calendar feature uses
+    German market time because demand, the solar shape, weekday behaviour, and
+    public holidays follow the local clock and calendar. UTC calendar columns
+    are intentionally not produced: the models never used them. Full daily
+    price-curve lags are still built on UTC hours elsewhere to keep 24 columns
+    per day across 23- and 25-hour DST days.
     """
 
     features = table.copy()
     timestamp_utc = pd.to_datetime(features["timestamp_utc"], utc=True)
     timestamp_local = timestamp_utc.dt.tz_convert(constants.GERMANY_MARKET_TIMEZONE)
 
-    features["hour"] = timestamp_utc.dt.hour
-    features["weekday"] = timestamp_utc.dt.weekday
-    features["month"] = timestamp_utc.dt.month
-    features["day_of_year"] = timestamp_utc.dt.dayofyear
-    features["is_weekend"] = features["weekday"].isin([5, 6]).astype(int)
-
-    features["hour_sin"] = np.sin(2 * np.pi * features["hour"] / 24)
-    features["hour_cos"] = np.cos(2 * np.pi * features["hour"] / 24)
-    features["weekday_sin"] = np.sin(2 * np.pi * features["weekday"] / 7)
-    features["weekday_cos"] = np.cos(2 * np.pi * features["weekday"] / 7)
-    features["month_sin"] = np.sin(2 * np.pi * features["month"] / 12)
-    features["month_cos"] = np.cos(2 * np.pi * features["month"] / 12)
-    features["day_of_year_sin"] = np.sin(2 * np.pi * features["day_of_year"] / 366)
-    features["day_of_year_cos"] = np.cos(2 * np.pi * features["day_of_year"] / 366)
-
     features["local_hour"] = timestamp_local.dt.hour
     features["local_weekday"] = timestamp_local.dt.weekday
     features["local_month"] = timestamp_local.dt.month
     features["local_day_of_year"] = timestamp_local.dt.dayofyear
     features["local_is_weekend"] = features["local_weekday"].isin([5, 6]).astype(int)
+    features["is_holiday"] = local_german_holiday_flag(timestamp_local)
 
     features["local_hour_sin"] = np.sin(2 * np.pi * features["local_hour"] / 24)
     features["local_hour_cos"] = np.cos(2 * np.pi * features["local_hour"] / 24)
@@ -135,12 +143,14 @@ def add_calendar_features(table: pd.DataFrame) -> pd.DataFrame:
     return features
 
 
-def add_price_lag_features(table: pd.DataFrame) -> pd.DataFrame:
-    """Add price lag and rolling-price features.
+def add_rolling_price_features(table: pd.DataFrame) -> pd.DataFrame:
+    """Add rolling-price summary features.
 
-    Rolling price features are shifted by 24 hours, not 1 hour. This means a
-    full-day day-ahead forecast never uses actual prices from another hour of
-    the delivery day.
+    The rolling windows are shifted by 24 hours, not 1 hour, so a full-day
+    day-ahead forecast never uses an actual price from another hour of the same
+    delivery day. Plain same-hour lags (yesterday, two days ago, last week) are
+    intentionally not added here: they are already provided exactly by the daily
+    price-curve columns ``price_dN_hHH`` and would be perfectly collinear.
     """
 
     features = table.copy()
@@ -148,12 +158,6 @@ def add_price_lag_features(table: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(f"Required target column missing: {PRICE_COLUMN}")
 
     price = features[PRICE_COLUMN]
-    features["price_lag_24"] = price.shift(24)
-    features["price_lag_48"] = price.shift(48)
-    features["price_lag_168"] = price.shift(168)
-    features["price_lag_336"] = price.shift(336)
-    features["price_lag_720"] = price.shift(720)
-
     shifted_price = price.shift(24)
     features["price_rolling_mean_24"] = shifted_price.rolling(24).mean()
     features["price_rolling_std_24"] = shifted_price.rolling(24).std()
@@ -170,12 +174,16 @@ def add_daily_price_curve_lag_features(table: pd.DataFrame) -> pd.DataFrame:
     timestamp_utc = pd.to_datetime(features["timestamp_utc"], utc=True)
     features["utc_date_for_lags"] = timestamp_utc.dt.date
 
-    daily_price_curve = features.pivot_table(
-        index="utc_date_for_lags",
-        columns="hour",
-        values=PRICE_COLUMN,
-        aggfunc="last",
-    ).reindex(columns=range(24))
+    daily_price_curve = (
+        features.assign(utc_hour_for_lags=timestamp_utc.dt.hour)
+        .pivot_table(
+            index="utc_date_for_lags",
+            columns="utc_hour_for_lags",
+            values=PRICE_COLUMN,
+            aggfunc="last",
+        )
+        .reindex(columns=range(24))
+    )
 
     for day_lag in [1, 2, 3, 7]:
         lagged_curve = daily_price_curve.shift(day_lag)
@@ -208,21 +216,45 @@ def add_daily_price_curve_lag_features(table: pd.DataFrame) -> pd.DataFrame:
     return features.drop(columns=["utc_date_for_lags"])
 
 
+def reindex_to_full_hourly_grid(table: pd.DataFrame) -> pd.DataFrame:
+    """Reindex to a gap-free hourly UTC grid so row shifts equal real hours.
+
+    The combine stage can drop rows where a forecast driver was still missing.
+    Once a row is missing, ``shift(n)`` no longer means ``n`` hours, which would
+    silently misalign every price lag and rolling feature. Re-inserting the
+    missing hours as empty rows keeps all later shifts on a true hourly clock;
+    those empty rows are removed again by the final ``dropna``.
+    """
+
+    table = table.copy()
+    table["timestamp_utc"] = pd.to_datetime(table["timestamp_utc"], utc=True)
+    full_range = pd.date_range(
+        table["timestamp_utc"].min(),
+        table["timestamp_utc"].max(),
+        freq="h",
+    )
+    return (
+        table.set_index("timestamp_utc")
+        .reindex(full_range)
+        .rename_axis("timestamp_utc")
+        .reset_index()
+    )
+
+
 def build_feature_table(clean_hourly_dataset: pd.DataFrame) -> pd.DataFrame:
     """Build the modelling-ready feature table from clean hourly data."""
 
     features = clean_hourly_dataset.copy()
     features["timestamp_utc"] = pd.to_datetime(features["timestamp_utc"], utc=True)
     features = features.sort_values("timestamp_utc").reset_index(drop=True)
+    features = reindex_to_full_hourly_grid(features)
     features = add_fundamental_features(features)
     features = add_calendar_features(features)
-    features = add_price_lag_features(features)
+    features = add_rolling_price_features(features)
     features = add_daily_price_curve_lag_features(features)
 
-    required_lag_columns = [
-        "price_lag_24",
-        "price_lag_48",
-        "price_lag_168",
+    required_columns = [
+        PRICE_COLUMN,
         "price_rolling_mean_24",
         "price_rolling_mean_168",
         "price_d1_h00",
@@ -232,7 +264,7 @@ def build_feature_table(clean_hourly_dataset: pd.DataFrame) -> pd.DataFrame:
         "price_d1_mean",
         "price_d7_mean",
     ]
-    features = features.dropna(subset=required_lag_columns).reset_index(drop=True)
+    features = features.dropna(subset=required_columns).reset_index(drop=True)
     return features
 
 
