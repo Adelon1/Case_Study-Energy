@@ -1,48 +1,22 @@
-# Python bytecode and caches
-__pycache__/
-*.py[cod]
-*$py.class
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-
-# Virtual environments
-.venv/
-venv/
-env/
-
-# Local secrets and environment files
+# Local secrets
 .env
 .env.*
 !.env.example
 
-# Jupyter/runtime files
-.ipynb_checkpoints/
+# Local Python environment/cache
+.venv/
+__pycache__/
+*.py[cod]
+
+# Generated project artifacts
+data/01_raw/*
+data/02_interim/*
+data/03_processed/*
+models/
+outputs/
 *.log
 
-# OS/editor noise
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
-
-# Generated data and outputs
-data/raw/**
-data/interim/**
-data/processed/**
-outputs/**
-report/*.pdf
-
-# Keep directory placeholders if added later
-!.gitkeep
-!data/raw/
-!data/raw/entsoe/
-!data/raw/energy_charts/
-!data/raw/entsoe/.gitkeep
-!data/raw/energy_charts/.gitkeep
-!data/interim/
-!data/interim/.gitkeep
-!data/processed/
-!data/processed/.gitkeep
+# Keep data folder placeholders
+!data/01_raw/.gitkeep
+!data/02_interim/.gitkeep
+!data/03_processed/.gitkeep

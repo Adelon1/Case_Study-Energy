@@ -347,9 +347,9 @@ power-fair-value-case-study/
 ├── configs/
 │   └── market_config.yaml
 ├── data/
-│   ├── raw/
-│   ├── interim/
-│   └── processed/
+│   ├── 01_raw/
+│   ├── 02_interim/
+│   └── 03_processed/
 ├── notebooks/
 │   └── exploratory_analysis.ipynb
 ├── src/
@@ -358,7 +358,7 @@ power-fair-value-case-study/
 │   ├── quality/
 │   │   └── qa_checks.py
 │   ├── features/
-│   │   └── build_features.py
+│   │   └── 06_build_features.py
 │   ├── models/
 │   │   ├── baseline.py
 │   │   └── improved_model.py

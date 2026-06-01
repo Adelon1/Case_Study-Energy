@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import importlib
+
 import numpy as np
 import pandas as pd
 
-from pipeline_helpers.modelling import constants
+constants = importlib.import_module("pipeline_helpers.02_modelling.00_constants")
 
 
 def mean_absolute_error_for_mask(errors: pd.Series, mask: pd.Series) -> float:

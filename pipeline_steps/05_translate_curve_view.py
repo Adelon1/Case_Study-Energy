@@ -2,7 +2,7 @@
 
 Example:
     .venv/bin/python pipeline_steps/05_translate_curve_view.py \
-      --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
+      --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
       --start 01-10-2025 \
       --end 01-01-2026 \
       --model lear_model \
@@ -18,6 +18,7 @@ Interactive mode:
 from __future__ import annotations
 
 import argparse
+import importlib
 import subprocess
 import sys
 from pathlib import Path
@@ -28,19 +29,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from pipeline_helpers.curve_translation import constants  # noqa: E402
-from pipeline_helpers.curve_translation.curve_view import (  # noqa: E402
-    build_curve_view,
-    write_curve_view_outputs,
-)
-from pipeline_helpers.curve_translation.forecast_blocks import parse_utc_period  # noqa: E402
-from pipeline_helpers.modelling.period_prediction import (  # noqa: E402
-    build_model_options,
-    get_or_create_predictions,
-)
+constants = importlib.import_module("pipeline_helpers.03_curve_translation.00_constants")
+curve_view = importlib.import_module("pipeline_helpers.03_curve_translation.02_curve_view")
+forecast_blocks = importlib.import_module("pipeline_helpers.03_curve_translation.01_forecast_blocks")
+period_prediction = importlib.import_module("pipeline_helpers.02_modelling.10_period_prediction")
+
+build_curve_view = curve_view.build_curve_view
+write_curve_view_outputs = curve_view.write_curve_view_outputs
+parse_utc_period = forecast_blocks.parse_utc_period
+build_model_options = period_prediction.build_model_options
+get_or_create_predictions = period_prediction.get_or_create_predictions
 
 
-DEFAULT_FEATURES = "data/processed/germany_modelling_2021_2026/germany_model_features.csv"
+DEFAULT_FEATURES = "data/03_processed/germany_modelling_2021_2026/germany_model_features.csv"
 
 
 def parse_command_line_arguments() -> argparse.Namespace:

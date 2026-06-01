@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import importlib
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from pipeline_helpers.entsoe_data import constants
+constants = importlib.import_module("pipeline_helpers.01_entsoe_data.00_constants")
 
 
 @dataclass(frozen=True)

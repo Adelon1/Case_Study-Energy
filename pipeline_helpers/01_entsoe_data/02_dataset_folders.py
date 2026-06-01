@@ -1,4 +1,4 @@
-"""Create matching raw, interim, and processed folders for one pipeline run."""
+"""Create matching numbered data-stage folders for one pipeline run."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ class DatasetFolders:
     processed: Path
 
 
-def next_dataset_name(base_dir: str | Path = "data/raw") -> str:
-    """Return the next available ``DataSet<i>`` name based on raw folders."""
+def next_dataset_name(base_dir: str | Path = "data/01_raw") -> str:
+    """Return the next available ``DataSet<i>`` name based on stage-1 folders."""
 
     base_path = Path(base_dir)
     index = 0
@@ -26,7 +26,7 @@ def next_dataset_name(base_dir: str | Path = "data/raw") -> str:
     return f"DataSet{index}"
 
 
-def available_named_folder(preferred_name: str, base_dir: str | Path = "data/raw") -> str:
+def available_named_folder(preferred_name: str, base_dir: str | Path = "data/01_raw") -> str:
     """Return ``preferred_name`` or add a numeric suffix if it already exists."""
 
     base_path = Path(base_dir)
@@ -40,14 +40,14 @@ def available_named_folder(preferred_name: str, base_dir: str | Path = "data/raw
 
 
 def create_dataset_folders(dataset_name: str | None = None) -> DatasetFolders:
-    """Create matching folders under ``data/raw``, ``data/interim``, and ``data/processed``."""
+    """Create matching folders under ``data/01_raw``, ``data/02_interim``, and ``data/03_processed``."""
 
     name = available_named_folder(dataset_name) if dataset_name else next_dataset_name()
     folders = DatasetFolders(
         name=name,
-        raw=Path("data/raw") / name,
-        interim=Path("data/interim") / name,
-        processed=Path("data/processed") / name,
+        raw=Path("data/01_raw") / name,
+        interim=Path("data/02_interim") / name,
+        processed=Path("data/03_processed") / name,
     )
     folders.raw.mkdir(parents=True, exist_ok=False)
     folders.interim.mkdir(parents=True, exist_ok=False)

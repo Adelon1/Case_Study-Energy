@@ -6,7 +6,7 @@ day, not one hour at a time.
 
 Example:
     .venv/bin/python pipeline_steps/04_predict_day_ahead.py \
-      --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
+      --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
       --delivery-day 01-12-2025 \
       --model lear_model \
       --regularization lasso \
@@ -16,6 +16,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import importlib
 import sys
 from pathlib import Path
 
@@ -25,11 +26,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from pipeline_helpers.modelling.period_prediction import build_model_options, get_or_create_predictions  # noqa: E402
-from pipeline_helpers.curve_translation.forecast_blocks import parse_utc_period  # noqa: E402
+period_prediction = importlib.import_module("pipeline_helpers.02_modelling.10_period_prediction")
+forecast_blocks = importlib.import_module("pipeline_helpers.03_curve_translation.01_forecast_blocks")
+
+build_model_options = period_prediction.build_model_options
+get_or_create_predictions = period_prediction.get_or_create_predictions
+parse_utc_period = forecast_blocks.parse_utc_period
 
 
-DEFAULT_FEATURES = "data/processed/germany_modelling_2021_2026/germany_model_features.csv"
+DEFAULT_FEATURES = "data/03_processed/germany_modelling_2021_2026/germany_model_features.csv"
 
 
 def parse_command_line_arguments() -> argparse.Namespace:

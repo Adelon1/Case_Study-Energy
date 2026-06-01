@@ -13,13 +13,14 @@ Parsing XML into CSV is intentionally separate from this file.
 from __future__ import annotations
 
 import os
+import importlib
 from datetime import datetime
 from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
 
-from pipeline_helpers.entsoe_data import constants
+constants = importlib.import_module("pipeline_helpers.01_entsoe_data.00_constants")
 
 
 class EntsoeApiConfigurationError(RuntimeError):

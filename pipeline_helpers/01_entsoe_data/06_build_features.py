@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib
 from pathlib import Path
 
 import holidays
 import numpy as np
 import pandas as pd
 
-from pipeline_helpers.entsoe_data import constants
+constants = importlib.import_module("pipeline_helpers.01_entsoe_data.00_constants")
 
 
 PRICE_COLUMN = "day_ahead_price_eur_per_mwh"

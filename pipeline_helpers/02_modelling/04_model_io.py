@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def dataset_name_from_feature_path(feature_path: str | Path) -> str:
-    """Use the processed dataset folder name as the model namespace."""
+    """Use the stage-3 dataset folder name as the model namespace."""
 
     return Path(feature_path).resolve().parent.name
 

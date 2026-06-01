@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import importlib
 from pathlib import Path
 
 import pandas as pd
 
-from pipeline_helpers.curve_translation import constants
-from pipeline_helpers.curve_translation.forecast_blocks import (
-    BlockBand,
-    DeliveryPeriod,
-    calculate_block_band,
-    calculate_block_values,
-    filter_delivery_period,
-    peakload_mask,
-)
-from pipeline_helpers.modelling import constants as modelling_constants
+constants = importlib.import_module("pipeline_helpers.03_curve_translation.00_constants")
+forecast_blocks = importlib.import_module("pipeline_helpers.03_curve_translation.01_forecast_blocks")
+modelling_constants = importlib.import_module("pipeline_helpers.02_modelling.00_constants")
+
+BlockBand = forecast_blocks.BlockBand
+DeliveryPeriod = forecast_blocks.DeliveryPeriod
+calculate_block_band = forecast_blocks.calculate_block_band
+calculate_block_values = forecast_blocks.calculate_block_values
+filter_delivery_period = forecast_blocks.filter_delivery_period
+peakload_mask = forecast_blocks.peakload_mask
 
 
 @dataclass(frozen=True)

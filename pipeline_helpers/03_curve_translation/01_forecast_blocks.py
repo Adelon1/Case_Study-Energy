@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib
 
 import pandas as pd
 
-from pipeline_helpers.curve_translation import constants
+constants = importlib.import_module("pipeline_helpers.03_curve_translation.00_constants")
 
 
 @dataclass(frozen=True)
@@ -145,4 +146,3 @@ def calculate_block_band(predictions: pd.DataFrame, block: str) -> BlockBand:
         high=float(selected["y_pred_upper"].mean()),
         has_band=True,
     )
-

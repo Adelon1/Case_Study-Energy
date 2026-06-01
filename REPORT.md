@@ -137,34 +137,34 @@ This single decision is the spine of the rest of the report.
 
 ---
 
-## 4. Data ingestion: how raw ENTSO-E becomes a clean hourly table
+## 4. Data ingestion: how ENTSO-E XML becomes a clean hourly table
 
-The ingestion code lives in `pipeline_helpers/entsoe_data/` and is driven by
+The ingestion code lives in `pipeline_helpers/01_entsoe_data/` and is driven by
 `pipeline_steps/01_build_dataset.py`. It implements the layered data design that keeps
-raw responses, parsed tables, and the modelling table separate:
+stage-1 responses, parsed tables, and the modelling table separate:
 
 ```text
 data/
-  raw/         # native API responses, preserved untouched (ENTSO-E XML)
-  interim/     # one parsed CSV per dataset
-  processed/   # combined hourly table + feature table + QA report
+  01_raw/         # native API responses, preserved untouched (ENTSO-E XML)
+  02_interim/     # one parsed CSV per dataset
+  03_processed/   # combined hourly table + feature table + QA report
 ```
 
 The pipeline runs end to end as:
 
 1. **Parse CLI arguments** — which datasets, the German local start/end dates, mode,
    and the `.env` path (`01_build_dataset.py`).
-2. **Convert local dates to UTC API windows** (`date_windows.py`). The user thinks in
+2. **Convert local dates to UTC API windows** (`01_date_windows.py`). The user thinks in
    German delivery dates; ENTSO-E wants UTC windows.
 3. **Split into monthly chunks** so each download stays small and resumable.
-4. **Download XML** per dataset and chunk (`entsoe_api.py`), reading the token from
-   `ENTSOE_API_KEY` in the environment and saving raw XML under `data/raw/`.
-5. **Parse XML to standardized CSV** (`entsoe_xml_to_csv.py`) — one
-   `timestamp_utc, value` table per dataset in `data/interim/`.
+4. **Download XML** per dataset and chunk (`03_entsoe_api.py`), reading the token from
+   `ENTSOE_API_KEY` in the environment and saving XML under `data/01_raw/`.
+5. **Parse XML to standardized CSV** (`04_entsoe_xml_to_csv.py`) — one
+   `timestamp_utc, value` table per dataset in `data/02_interim/`.
 6. **Combine datasets** on `timestamp_utc`, aggregate to hourly means, and impute
-   missing forecast fundamentals (`combine_dataset_csvs.py`).
+   missing forecast fundamentals (`05_combine_dataset_csvs.py`).
 7. **Write the data QA report** (`data_qa_report.md`).
-8. **Build the feature table** (`pipeline_helpers/entsoe_data/build_features.py`).
+8. **Build the feature table** (`pipeline_helpers/01_entsoe_data/06_build_features.py`).
 
 The main dataset uses `day_ahead_prices`, `load_forecast`, `solar_forecast`,
 `wind_onshore_forecast`, and `wind_offshore_forecast` — hourly day-ahead prices plus
@@ -189,7 +189,7 @@ because they never pivot a whole local day.
 
 ENTSO-E forecast series occasionally have gaps (a real example was a February 2022
 `load_forecast` gap, confirmed source-side, not a parser bug). Imputation in
-`combine_dataset_csvs.py` fills a missing forecast value at time *t* with the same
+`05_combine_dataset_csvs.py` fills a missing forecast value at time *t* with the same
 column at *t − 24h*, and only for the four forecast driver columns. The fill is
 applied **repeatedly, up to 7 times**, so a value can be recovered from *t − 24h*,
 then *t − 48h*, and so on up to a week back — this recovers multi-day outages while
@@ -199,7 +199,7 @@ every fill reaches strictly backward in time, the procedure stays leakage-safe.
 
 ### The QA report
 
-`01_build_dataset.py` writes `data/processed/.../data_qa_report.md` covering: run name,
+`01_build_dataset.py` writes `data/03_processed/.../data_qa_report.md` covering: run name,
 source endpoint, included datasets, requested local window, API UTC window, parsed vs
 final frequency, expected vs actual row counts, coverage, duplicate timestamps,
 missing values, imputation counts, outlier checks, timestamp-alignment explanation,
@@ -209,7 +209,7 @@ DST handling, and known limitations. This is the Task-1 generated QA artifact.
 
 ## 5. Feature engineering: rich, but leakage-safe by construction
 
-Features are built in `pipeline_helpers/entsoe_data/build_features.py` in four blocks.
+Features are built in `pipeline_helpers/01_entsoe_data/06_build_features.py` in four blocks.
 The governing principle is the Section-3 information cutoff: a full next-day forecast
 must never peek at another hour of the same delivery day.
 
@@ -237,11 +237,11 @@ rows, so the table sits on a gap-free hourly UTC clock before lagged daily price
 are constructed. The empty filler rows are removed again by the final `dropna` on the
 required columns, so they never reach the model.
 
-### 5.1 From feature store to model-ready table (`modelling_dataset.py`)
+### 5.1 From feature store to model-ready table (`01_modelling_dataset.py`)
 
-`build_features.py` writes one wide feature store with every candidate column. Which of
+`06_build_features.py` writes one wide feature store with every candidate column. Which of
 those columns a model is actually allowed to see is decided separately, in
-`pipeline_helpers/modelling/modelling_dataset.py`. Keeping selection out of the models
+`pipeline_helpers/02_modelling/01_modelling_dataset.py`. Keeping selection out of the models
 means the leakage rules live in exactly one place, and every model is guaranteed to
 receive the same safe column set.
 
@@ -285,7 +285,7 @@ to know how the columns were chosen.
 
 ## 6. The models
 
-Each model lives in `pipeline_helpers/modelling/<name>.py` and exposes the same tiny
+Each model lives in `pipeline_helpers/02_modelling/<name>.py` and exposes the same tiny
 contract so the validation engine never needs model-specific knowledge:
 
 ```python
@@ -301,7 +301,7 @@ so adding a model is just dropping in a new file. This uniform interface was a
 deliberate early design decision: the same engine then drives the baseline, the LEAR
 model, and the boosted trees.
 
-### 6.1 Baseline — seasonal lag (`baseline_week_lag.py`)
+### 6.1 Baseline — seasonal lag (`06_baseline_week_lag.py`)
 
 The baseline predicts the target from one of its own past values, with no fitted state —
 `train()` returns `None` purely to honour the interface, and `predict()` just reads a
@@ -321,7 +321,7 @@ Its job is to be the honest denominator: an improved model that cannot beat last
 price is not worth deploying. Lago et al. explicitly warn against weak benchmarks, so a
 real seasonal naive is used rather than a trivial one.
 
-### 6.2 Headline model — LEAR-style 24-hour regularised ARX (`lear_model.py`)
+### 6.2 Headline model — LEAR-style 24-hour regularised ARX (`07_lear_model.py`)
 
 This is the project's main forecaster: a **LEAR-style** model, i.e. 24 separate
 regularised linear models, one per local delivery hour. It is described as
@@ -355,7 +355,7 @@ Implementation details that matter:
 - Target transforms `raw` and `asinh` are both supported; `raw` is the default and is
   kept unless validation shows `asinh` helps.
 
-### 6.3 Nonlinear benchmark — boosted trees (`boosted_trees.py`)
+### 6.3 Nonlinear benchmark — boosted trees (`08_boosted_trees.py`)
 
 The nonlinear counterpart is a single pooled `HistGradientBoostingRegressor`. The
 motivation is that trees capture interactions (hour × residual load, weekday ×
@@ -379,7 +379,7 @@ configurations (loss × learning-rate / depth variants).
 
 ## 7. Validation: rolling-origin, leakage-free, operationally realistic
 
-Validation lives in `pipeline_helpers/modelling/validation.py` and is driven by
+Validation lives in `pipeline_helpers/02_modelling/09_validation.py` and is driven by
 `pipeline_steps/02_validate_model.py`. It is the part Lago et al.
 ([2021](https://arxiv.org/abs/2008.08004)) care about most, and their best-practice
 review shaped every choice here: **no random K-fold** (it leaks the future into the
@@ -420,7 +420,7 @@ Outputs per run (under `models/<dataset>/<run-name>/`):
 
 ## 8. Metrics: six, and only six
 
-`metrics.py` was deliberately trimmed from a sprawling 14 columns to the six that
+`02_metrics.py` was deliberately trimmed from a sprawling 14 columns to the six that
 actually inform a decision (`constants.METRIC_NAMES`):
 
 | Metric | Meaning |
@@ -441,7 +441,7 @@ stay legible.
 
 ## 9. Forecast uncertainty: empirical P10–P90 residual bands
 
-A point forecast alone cannot drive a risk-aware trade, so `prediction_bands.py` adds
+A point forecast alone cannot drive a risk-aware trade, so `03_prediction_bands.py` adds
 an empirical band:
 
 - `residual_quantiles_by_hour(predictions, lower=0.10, upper=0.90)` computes, **per
@@ -500,12 +500,12 @@ calibration.
 
 ## 11. Prompt-curve translation: from hourly forecast to a tradable view
 
-This is Task 3, implemented in `pipeline_helpers/curve_translation/` and driven by
+This is Task 3, implemented in `pipeline_helpers/03_curve_translation/` and driven by
 `pipeline_steps/05_translate_curve_view.py`. It is where the forecast becomes a trade.
 
 ### 11.1 Blocks
 
-`forecast_blocks.py` aggregates the hourly forecast into the four curve-relevant
+`01_forecast_blocks.py` aggregates the hourly forecast into the four curve-relevant
 blocks: **baseload**, **peakload**, **offpeak**, and **peak/base spread**.
 Peak/offpeak is defined on German local market time (peak = weekday hours 08:00–20:00
 local), which is correct for German market interpretation and does not disturb the UTC
@@ -514,7 +514,7 @@ band (returning "no band" for the spread block or when band columns are absent).
 
 ### 11.2 Where the forecast comes from
 
-`period_prediction.py` resolves the forecast for a requested period from one of three
+`10_period_prediction.py` resolves the forecast for a requested period from one of three
 sources, in priority order: an existing period prediction, the existing out-of-sample
 validation predictions, or a freshly retrained rolling window. Reusing validation
 predictions where possible is what lets a historical period carry a real empirical
@@ -522,7 +522,7 @@ band; a retrained forward period cannot, and falls back to the proxy below.
 
 ### 11.3 The band-driven signal
 
-`curve_view.py` was rewritten so the **band drives the signal** instead of a hand-tuned
+`02_curve_view.py` was rewritten so the **band drives the signal** instead of a hand-tuned
 threshold. The old `confidence_score` / `risk_buffer` thresholds were removed entirely.
 The logic is now:
 
@@ -591,17 +591,17 @@ Top-level pipeline steps (`pipeline_steps/`, numbered in run order):
 - `05_translate_curve_view.py` — curve fair-value translation (+ optional commentary).
 - `06_generate_ai_commentary.py` — standalone LLM commentary.
 
-Data helpers (`pipeline_helpers/entsoe_data/`): `constants.py`, `date_windows.py`,
-`dataset_folders.py`, `entsoe_api.py`, `entsoe_xml_to_csv.py`,
-`combine_dataset_csvs.py`, `build_features.py`.
+Data helpers (`pipeline_helpers/01_entsoe_data/`): `00_constants.py`, `01_date_windows.py`,
+`02_dataset_folders.py`, `03_entsoe_api.py`, `04_entsoe_xml_to_csv.py`,
+`05_combine_dataset_csvs.py`, `06_build_features.py`.
 
-Modelling helpers (`pipeline_helpers/modelling/`): `constants.py`, `metrics.py`,
-`prediction_bands.py`, `validation.py`, `baseline_week_lag.py`, `lear_model.py`,
-`boosted_trees.py`, `period_prediction.py`, plus `model_support.py`, `model_io.py`,
-`modelling_dataset.py`.
+Modelling helpers (`pipeline_helpers/02_modelling/`): `00_constants.py`, `02_metrics.py`,
+`03_prediction_bands.py`, `09_validation.py`, `06_baseline_week_lag.py`, `07_lear_model.py`,
+`08_boosted_trees.py`, `10_period_prediction.py`, plus `05_model_support.py`, `04_model_io.py`,
+`01_modelling_dataset.py`.
 
-Curve-translation helpers (`pipeline_helpers/curve_translation/`): `constants.py`,
-`forecast_blocks.py`, `curve_view.py`.
+Curve-translation helpers (`pipeline_helpers/03_curve_translation/`): `00_constants.py`,
+`01_forecast_blocks.py`, `02_curve_view.py`.
 
 The shape of the repository mirrors the red line: `entsoe_data` answers "what do we
 know and when", `modelling` answers "what is the price given that knowledge, and how
@@ -624,12 +624,12 @@ cp .env.example .env        # fill ENTSOE_API_KEY (and optional OPENAI_API_KEY)
 
 # 2. validate the baseline
 .venv/bin/python pipeline_steps/02_validate_model.py \
-  --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
+  --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
   --model baseline_week_lag
 
 # 3. validate the headline LEAR model
 .venv/bin/python pipeline_steps/02_validate_model.py \
-  --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
+  --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
   --model lear_model --regularization lasso --target-transform raw \
   --target hourly --feature-mode day_ahead_full
 
@@ -639,14 +639,14 @@ cp .env.example .env        # fill ENTSOE_API_KEY (and optional OPENAI_API_KEY)
 
 # 5. curve translation
 .venv/bin/python pipeline_steps/05_translate_curve_view.py \
-  --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
+  --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
   --start 01-11-2025 --end 01-12-2025 \
   --model lear_model --regularization lasso --target-transform raw \
   --target hourly --feature-mode period_hourly_safe --block all --benchmark trailing_average
 
 # 6. AI commentary
 .venv/bin/python pipeline_steps/06_generate_ai_commentary.py \
-  --summary outputs/curve_translation/germany_modelling_2021_2026/<run>/20251101_20251201/baseload/curve_view_summary.csv
+  --summary outputs/03_curve_translation/germany_modelling_2021_2026/<run>/20251101_20251201/baseload/curve_view_summary.csv
 ```
 
 ---

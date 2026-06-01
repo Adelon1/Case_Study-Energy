@@ -10,14 +10,15 @@ Example:
 
 Each run creates matching folders:
 
-``data/raw/DataSet<i>/``
-``data/interim/DataSet<i>/``
-``data/processed/DataSet<i>/``
+``data/01_raw/DataSet<i>/``
+``data/02_interim/DataSet<i>/``
+``data/03_processed/DataSet<i>/``
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib
 import sys
 import time
 from pathlib import Path
@@ -28,19 +29,23 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from pipeline_helpers.entsoe_data import constants  # noqa: E402
-from pipeline_helpers.entsoe_data.combine_dataset_csvs import (  # noqa: E402
-    ImputationReport,
-    write_combined_dataset,
-)
-from pipeline_helpers.entsoe_data.build_features import write_feature_dataset  # noqa: E402
-from pipeline_helpers.entsoe_data.date_windows import (  # noqa: E402
-    parse_local_date_window,
-    split_local_date_window_into_months,
-)
-from pipeline_helpers.entsoe_data.dataset_folders import create_folders_for_mode  # noqa: E402
-from pipeline_helpers.entsoe_data.entsoe_api import save_raw_xml_response, send_entsoe_get_request  # noqa: E402
-from pipeline_helpers.entsoe_data.entsoe_xml_to_csv import write_dataset_csv_from_xml_files  # noqa: E402
+constants = importlib.import_module("pipeline_helpers.01_entsoe_data.00_constants")
+combine_dataset_csvs = importlib.import_module("pipeline_helpers.01_entsoe_data.05_combine_dataset_csvs")
+build_features = importlib.import_module("pipeline_helpers.01_entsoe_data.06_build_features")
+date_windows = importlib.import_module("pipeline_helpers.01_entsoe_data.01_date_windows")
+dataset_folders = importlib.import_module("pipeline_helpers.01_entsoe_data.02_dataset_folders")
+entsoe_api = importlib.import_module("pipeline_helpers.01_entsoe_data.03_entsoe_api")
+entsoe_xml_to_csv = importlib.import_module("pipeline_helpers.01_entsoe_data.04_entsoe_xml_to_csv")
+
+ImputationReport = combine_dataset_csvs.ImputationReport
+write_combined_dataset = combine_dataset_csvs.write_combined_dataset
+write_feature_dataset = build_features.write_feature_dataset
+parse_local_date_window = date_windows.parse_local_date_window
+split_local_date_window_into_months = date_windows.split_local_date_window_into_months
+create_folders_for_mode = dataset_folders.create_folders_for_mode
+save_raw_xml_response = entsoe_api.save_raw_xml_response
+send_entsoe_get_request = entsoe_api.send_entsoe_get_request
+write_dataset_csv_from_xml_files = entsoe_xml_to_csv.write_dataset_csv_from_xml_files
 
 
 def parse_command_line_arguments() -> argparse.Namespace:
@@ -175,7 +180,7 @@ def count_obvious_outliers(table: pd.DataFrame) -> dict[str, int]:
 
 
 def infer_input_frequencies(interim_folder: Path, datasets: list[str]) -> dict[str, str]:
-    """Infer raw parsed CSV frequency per dataset before hourly aggregation."""
+    """Infer parsed CSV frequency per dataset before hourly aggregation."""
 
     frequencies: dict[str, str] = {}
     for dataset in datasets:
@@ -290,7 +295,7 @@ def write_qa_report(
 ## Dataset Run
 
 - Dataset folder: `{dataset_name}`
-- Processed CSV: `{processed_csv_path}`
+- Stage-3 CSV: `{processed_csv_path}`
 - Data source: ENTSO-E Transparency Platform REST API
 - API endpoint: `{constants.ENTSOE_BASE_URL}`
 - Market: Germany/Luxembourg bidding zone (`DE-LU`)
@@ -364,7 +369,7 @@ The pipeline does not join on local clock time. ENTSO-E XML timestamps are UTC, 
 
 
 def main() -> None:
-    """Run the full XML -> interim CSV -> combined CSV workflow."""
+    """Run the full XML -> stage-2 CSV -> stage-3 CSV workflow."""
 
     started_at = time.perf_counter()
     args = parse_command_line_arguments()

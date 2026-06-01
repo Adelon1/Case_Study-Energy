@@ -12,9 +12,11 @@ out-of-sample validation errors, never from the value being predicted.
 
 from __future__ import annotations
 
+import importlib
+
 import pandas as pd
 
-from pipeline_helpers.modelling import constants
+constants = importlib.import_module("pipeline_helpers.02_modelling.00_constants")
 
 HOUR_COLUMN = "local_hour"
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import warnings
 from dataclasses import dataclass
@@ -10,8 +11,10 @@ from types import ModuleType
 
 import pandas as pd
 
-from pipeline_helpers.modelling import constants
-from pipeline_helpers.modelling.metrics import calculate_metrics
+constants = importlib.import_module("pipeline_helpers.02_modelling.00_constants")
+metrics = importlib.import_module("pipeline_helpers.02_modelling.02_metrics")
+
+calculate_metrics = metrics.calculate_metrics
 
 
 @dataclass(frozen=True)

@@ -15,16 +15,22 @@ from types import ModuleType
 import numpy as np
 import pandas as pd
 
-from pipeline_helpers.modelling import constants
+constants = importlib.import_module("pipeline_helpers.02_modelling.00_constants")
 
 
 SUPPORTED_TARGET_TRANSFORMS = {"raw", "asinh"}
 
 
 def load_model_module(model_name: str) -> ModuleType:
-    """Import a model module from ``pipeline_helpers.modelling`` by its name."""
+    """Import a numbered model module by its stable public name."""
 
-    return importlib.import_module(f"pipeline_helpers.modelling.{model_name}")
+    module_name_by_model = {
+        "baseline_week_lag": "06_baseline_week_lag",
+        "lear_model": "07_lear_model",
+        "boosted_trees": "08_boosted_trees",
+    }
+    module_name = module_name_by_model.get(model_name, model_name)
+    return importlib.import_module(f"pipeline_helpers.02_modelling.{module_name}")
 
 
 def model_run_name(model_module: ModuleType, model_options: dict[str, object]) -> str:

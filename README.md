@@ -23,7 +23,7 @@ targets are selected with `--target hourly` (default) or `--target period_averag
 
 ## Features
 
-- ENTSO-E ingestion with raw → interim → processed data layout and a generated QA report.
+- ENTSO-E ingestion with 01_raw → 02_interim → 03_processed data layout and a generated QA report.
 - Correct UTC/DST handling (UTC join key, local German calendar features, 24-column daily lags across 23/25-hour days).
 - Leakage-safe feature engineering with previous UTC daily price curves and local German calendar features.
 - Three models behind one interface: seasonal-lag baseline, **LEAR-style 24-hour regularised ARX** (headline), and a histogram gradient-boosting benchmark.
@@ -59,12 +59,12 @@ Environment variables (loaded from `.env`, never committed):
 
 # 2. Validate the baseline
 .venv/bin/python pipeline_steps/02_validate_model.py \
-  --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
+  --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
   --model baseline_week_lag
 
 # 3. Validate the headline LEAR model
 .venv/bin/python pipeline_steps/02_validate_model.py \
-  --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
+  --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
   --model lear_model --regularization lasso --target-transform raw \
   --target hourly --feature-mode day_ahead_full
 
@@ -74,21 +74,21 @@ Environment variables (loaded from `.env`, never committed):
 
 # 5. Translate a period into curve views
 .venv/bin/python pipeline_steps/05_translate_curve_view.py \
-  --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
+  --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
   --start 01-11-2025 --end 01-12-2025 \
   --model lear_model --regularization lasso --target-transform raw \
   --target hourly --feature-mode period_hourly_safe --block all --benchmark trailing_average
 
 # 6. (optional) AI commentary for one curve view
 .venv/bin/python pipeline_steps/06_generate_ai_commentary.py \
-  --summary outputs/curve_translation/germany_modelling_2021_2026/<run>/20251101_20251201/baseload/curve_view_summary.csv
+  --summary outputs/03_curve_translation/germany_modelling_2021_2026/<run>/20251101_20251201/baseload/curve_view_summary.csv
 ```
 
 Forecast a single delivery day as a 24-hour vector:
 
 ```bash
 .venv/bin/python pipeline_steps/04_predict_day_ahead.py \
-  --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
+  --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
   --delivery-day 01-12-2025 \
   --model lear_model --regularization lasso --target-transform raw
 ```
@@ -105,29 +105,29 @@ pipeline_steps/                  # runnable entry points, numbered in run order
   06_generate_ai_commentary.py   # LLM commentary with logging + fallback
 
 pipeline_helpers/
-  entsoe_data/                   # ingestion, parsing, QA, feature engineering
-  modelling/                     # models, validation, metrics, prediction bands
-  curve_translation/             # blocks, benchmarks, band-driven signal
+  01_entsoe_data/                   # ingestion, parsing, QA, feature engineering
+  02_modelling/                     # models, validation, metrics, prediction bands
+  03_curve_translation/             # blocks, benchmarks, band-driven signal
 
-data/        raw/ interim/ processed/   (generated; not tracked)
+data/        01_raw/ 02_interim/ 03_processed/   (generated; not tracked)
 models/      validation runs and saved artifacts per model
-outputs/     figures/ and curve_translation/ reports
+outputs/     figures/ and 03_curve_translation/ reports
 ```
 
 ## Outputs
 
 | Path | Contents |
 | --- | --- |
-| `data/processed/.../germany_model_dataset.csv` | clean hourly modelling dataset |
-| `data/processed/.../germany_model_features.csv` | feature table |
-| `data/processed/.../data_qa_report.md` | ingestion + data QA report |
+| `data/03_processed/.../germany_model_dataset.csv` | clean hourly modelling dataset |
+| `data/03_processed/.../germany_model_features.csv` | feature table |
+| `data/03_processed/.../data_qa_report.md` | ingestion + data QA report |
 | `models/<dataset>/<run>/validation_summary.csv` | averaged metrics per parameter set |
 | `models/<dataset>/<run>/validation_metrics.csv` | one row per parameter × fold |
 | `models/<dataset>/<run>/predictions.csv` | out-of-sample predictions with `y_pred_lower/upper` bands |
 | `models/<dataset>/<run>/model.joblib`, `metadata.json` | saved model + run metadata |
 | `outputs/figures/<run>/*.png` | validation figures |
-| `outputs/curve_translation/.../curve_view_report.md` | prompt-curve fair-value view + signal |
-| `outputs/curve_translation/.../ai_commentary.md` | optional LLM (or fallback) commentary |
+| `outputs/03_curve_translation/.../curve_view_report.md` | prompt-curve fair-value view + signal |
+| `outputs/03_curve_translation/.../ai_commentary.md` | optional LLM (or fallback) commentary |
 
 ## Headline result
 

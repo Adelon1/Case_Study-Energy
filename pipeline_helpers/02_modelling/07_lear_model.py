@@ -10,6 +10,7 @@ independently instead of sharing one global alpha.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib
 
 import pandas as pd
 from sklearn.linear_model import ElasticNetCV, LassoCV, RidgeCV
@@ -17,7 +18,8 @@ from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from pipeline_helpers.modelling import constants, model_support
+constants = importlib.import_module("pipeline_helpers.02_modelling.00_constants")
+model_support = importlib.import_module("pipeline_helpers.02_modelling.05_model_support")
 
 
 MODEL_NAME = "lear_model"

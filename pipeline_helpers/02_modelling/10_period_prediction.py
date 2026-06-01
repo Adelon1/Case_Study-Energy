@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import warnings
 from dataclasses import dataclass
@@ -11,23 +12,27 @@ from pathlib import Path
 import joblib
 import pandas as pd
 
-from pipeline_helpers.curve_translation import constants as curve_constants
-from pipeline_helpers.curve_translation.forecast_blocks import DeliveryPeriod
-from pipeline_helpers.modelling import constants
-from pipeline_helpers.modelling.model_io import default_models_base_folder, read_json, write_json
-from pipeline_helpers.modelling.model_support import (
-    load_model_module,
-    model_run_name,
-    model_state_diagnostics,
-)
-from pipeline_helpers.modelling.modelling_dataset import build_modelling_dataset
-from pipeline_helpers.modelling.validation import (
-    TimeWindow,
-    add_months,
-    load_feature_data,
-    slice_window,
-    train_predict_window,
-)
+curve_constants = importlib.import_module("pipeline_helpers.03_curve_translation.00_constants")
+forecast_blocks = importlib.import_module("pipeline_helpers.03_curve_translation.01_forecast_blocks")
+constants = importlib.import_module("pipeline_helpers.02_modelling.00_constants")
+model_io = importlib.import_module("pipeline_helpers.02_modelling.04_model_io")
+model_support = importlib.import_module("pipeline_helpers.02_modelling.05_model_support")
+modelling_dataset = importlib.import_module("pipeline_helpers.02_modelling.01_modelling_dataset")
+validation = importlib.import_module("pipeline_helpers.02_modelling.09_validation")
+
+DeliveryPeriod = forecast_blocks.DeliveryPeriod
+default_models_base_folder = model_io.default_models_base_folder
+read_json = model_io.read_json
+write_json = model_io.write_json
+load_model_module = model_support.load_model_module
+model_run_name = model_support.model_run_name
+model_state_diagnostics = model_support.model_state_diagnostics
+build_modelling_dataset = modelling_dataset.build_modelling_dataset
+TimeWindow = validation.TimeWindow
+add_months = validation.add_months
+load_feature_data = validation.load_feature_data
+slice_window = validation.slice_window
+train_predict_window = validation.train_predict_window
 
 
 @dataclass(frozen=True)

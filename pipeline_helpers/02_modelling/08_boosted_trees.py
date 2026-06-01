@@ -10,11 +10,12 @@ price spikes that are common in day-ahead markets.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib
 
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
 
-from pipeline_helpers.modelling import model_support
+model_support = importlib.import_module("pipeline_helpers.02_modelling.05_model_support")
 
 
 MODEL_NAME = "boosted_trees"

@@ -8,14 +8,17 @@ store into a clean modelling table. Models receive only:
 
 from __future__ import annotations
 
+import importlib
 import re
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
-from pipeline_helpers.curve_translation.forecast_blocks import peakload_mask
-from pipeline_helpers.modelling import constants
+forecast_blocks = importlib.import_module("pipeline_helpers.03_curve_translation.01_forecast_blocks")
+constants = importlib.import_module("pipeline_helpers.02_modelling.00_constants")
+
+peakload_mask = forecast_blocks.peakload_mask
 
 
 @dataclass(frozen=True)

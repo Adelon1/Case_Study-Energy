@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib
 from pathlib import Path
 
 import pandas as pd
 
-from pipeline_helpers.entsoe_data import constants
+constants = importlib.import_module("pipeline_helpers.01_entsoe_data.00_constants")
 
 
 RAW_FORECAST_INPUT_COLUMNS = [
@@ -176,7 +177,7 @@ def write_combined_dataset(
     end_utc: pd.Timestamp | None = None,
     output_filename: str = "germany_model_dataset.csv",
 ) -> CombinedDataset:
-    """Combine parsed dataset CSVs and write one processed model dataset."""
+    """Combine parsed dataset CSVs and write one stage-3 model dataset."""
 
     processed_folder = Path(processed_folder)
     processed_folder.mkdir(parents=True, exist_ok=True)

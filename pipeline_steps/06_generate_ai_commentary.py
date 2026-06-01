@@ -2,7 +2,7 @@
 
 Example:
     .venv/bin/python pipeline_steps/06_generate_ai_commentary.py \
-      --summary data/processed/germany_modelling_2021_2026/lear_model_lasso_raw/curve_translation/20251101_20251201/baseload/curve_view_summary.csv
+      --summary data/03_processed/germany_modelling_2021_2026/lear_model_lasso_raw/03_curve_translation/20251101_20251201/baseload/curve_view_summary.csv
 
 The script calls an OpenAI model using ``OPENAI_API_KEY`` from ``.env`` or the
 process environment. It logs the prompt, output, and failures next to the

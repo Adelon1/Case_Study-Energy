@@ -2,17 +2,17 @@
 
 Example:
     .venv/bin/python pipeline_steps/validate_model.py \
-      --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
+      --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
       --model baseline_week_lag
 
     .venv/bin/python pipeline_steps/validate_model.py \
-      --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
+      --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
       --model lear_model \
       --regularization elasticnet \
       --target-transform raw
 
     .venv/bin/python pipeline_steps/validate_model.py \
-      --features data/processed/germany_modelling_2021_2026/germany_model_features.csv \
+      --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
       --model boosted_trees
       
 Outputs are written to ``models/<dataset-name>/<run-name>`` unless
@@ -22,6 +22,7 @@ Outputs are written to ``models/<dataset-name>/<run-name>`` unless
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import sys
 from datetime import datetime, timezone
@@ -34,27 +35,28 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from pipeline_helpers.modelling import constants  # noqa: E402
-from pipeline_helpers.modelling.model_io import default_models_base_folder, write_json  # noqa: E402
-from pipeline_helpers.modelling.model_support import (  # noqa: E402
-    load_model_module,
-    model_run_name,
-    model_state_diagnostics,
-)
-from pipeline_helpers.modelling.modelling_dataset import build_modelling_dataset  # noqa: E402
-from pipeline_helpers.modelling.prediction_bands import (  # noqa: E402
-    add_prediction_bands,
-    band_coverage,
-    residual_quantiles_by_hour,
-)
-from pipeline_helpers.modelling.validation import (  # noqa: E402
-    TimeWindow,
-    average_metrics_by_params,
-    build_validation_windows,
-    load_feature_data,
-    run_rolling_validation,
-    train_predict_window,
-)
+constants = importlib.import_module("pipeline_helpers.02_modelling.00_constants")
+model_io = importlib.import_module("pipeline_helpers.02_modelling.04_model_io")
+model_support = importlib.import_module("pipeline_helpers.02_modelling.05_model_support")
+modelling_dataset = importlib.import_module("pipeline_helpers.02_modelling.01_modelling_dataset")
+prediction_bands = importlib.import_module("pipeline_helpers.02_modelling.03_prediction_bands")
+validation = importlib.import_module("pipeline_helpers.02_modelling.09_validation")
+
+default_models_base_folder = model_io.default_models_base_folder
+write_json = model_io.write_json
+load_model_module = model_support.load_model_module
+model_run_name = model_support.model_run_name
+model_state_diagnostics = model_support.model_state_diagnostics
+build_modelling_dataset = modelling_dataset.build_modelling_dataset
+add_prediction_bands = prediction_bands.add_prediction_bands
+band_coverage = prediction_bands.band_coverage
+residual_quantiles_by_hour = prediction_bands.residual_quantiles_by_hour
+TimeWindow = validation.TimeWindow
+average_metrics_by_params = validation.average_metrics_by_params
+build_validation_windows = validation.build_validation_windows
+load_feature_data = validation.load_feature_data
+run_rolling_validation = validation.run_rolling_validation
+train_predict_window = validation.train_predict_window
 
 
 def parse_command_line_arguments() -> argparse.Namespace:
@@ -64,13 +66,13 @@ def parse_command_line_arguments() -> argparse.Namespace:
     parser.add_argument("--interactive", action="store_true", help="Ask for settings interactively.")
     parser.add_argument(
         "--features",
-        default="data/processed/germany_modelling_2021_2026/germany_model_features.csv",
+        default="data/03_processed/germany_modelling_2021_2026/germany_model_features.csv",
         help="Path to germany_model_features.csv.",
     )
     parser.add_argument(
         "--model",
         default="baseline_week_lag",
-        help="Model module name inside pipeline_helpers/modelling.",
+        help="Model module name inside pipeline_helpers/02_modelling.",
     )
     parser.add_argument(
         "--output-folder",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import re
 from datetime import timedelta
 from pathlib import Path
@@ -9,7 +10,7 @@ from xml.etree import ElementTree as ET
 
 import pandas as pd
 
-from pipeline_helpers.entsoe_data import constants
+constants = importlib.import_module("pipeline_helpers.01_entsoe_data.00_constants")
 
 RESOLUTION_PATTERN = re.compile(r"^PT(?P<number>\d+)(?P<unit>M|H)$")
 
@@ -121,7 +122,7 @@ def expand_points_to_all_positions(
 def parse_entsoe_xml_to_table(xml_path: str | Path, dataset: str) -> pd.DataFrame:
     """Parse one ENTSO-E XML file into ``timestamp_utc`` plus one value column.
 
-    The dataset metadata in ``constants.py`` defines which value tag should be
+    The dataset metadata in ``00_constants.py`` defines which value tag should be
     read and which TimeSeries blocks should be kept. For example, day-ahead
     prices keep only Sequence 1 and read ``price.amount``.
     """
@@ -178,7 +179,7 @@ def write_dataset_csv_from_xml_files(
     dataset: str,
     output_path: str | Path,
 ) -> Path:
-    """Parse several XML chunks for one dataset and write one interim CSV."""
+    """Parse several XML chunks for one dataset and write one stage-2 CSV."""
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
