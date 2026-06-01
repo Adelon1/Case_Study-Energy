@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import re
 import sys
 import time
 from pathlib import Path
@@ -220,14 +221,99 @@ def format_elapsed_time(seconds: float) -> str:
     return f"{remaining_seconds:.1f} sec"
 
 
+def summarize_feature_columns(feature_table: pd.DataFrame) -> str:
+    """Return a compact Markdown inventory of the generated feature table."""
+
+    timestamp_columns = ["timestamp_utc", "timestamp_local"]
+    target_columns = ["day_ahead_price_eur_per_mwh"]
+    non_feature_columns = set(timestamp_columns + target_columns)
+    candidate_feature_columns = [
+        column for column in feature_table.columns if column not in non_feature_columns
+    ]
+
+    price_curve_groups: dict[str, list[int]] = {}
+    for column in feature_table.columns:
+        match = re.fullmatch(r"price_d(?P<days>\d+)_h(?P<hour>\d{2})", column)
+        if not match:
+            continue
+        price_curve_groups.setdefault(match.group("days"), []).append(int(match.group("hour")))
+
+    price_curve_rows = []
+    for days, hours in sorted(price_curve_groups.items(), key=lambda item: int(item[0])):
+        sorted_hours = sorted(hours)
+        hour_text = (
+            f"h{sorted_hours[0]:02d}...h{sorted_hours[-1]:02d}"
+            if len(sorted_hours) > 1
+            else f"h{sorted_hours[0]:02d}"
+        )
+        price_curve_rows.append([f"previous {days} day(s)", len(sorted_hours), hour_text])
+
+    daily_summary_columns = sorted(
+        column for column in feature_table.columns if re.fullmatch(r"price_d\d+_(min|max|mean)", column)
+    )
+    fundamental_columns = sorted(
+        column
+        for column in feature_table.columns
+        if any(token in column for token in ["load", "solar", "wind", "renewable", "residual"])
+    )
+    calendar_columns = sorted(
+        column
+        for column in feature_table.columns
+        if column.startswith("local_") or column == "is_holiday"
+    )
+    passthrough_source_columns = sorted(
+        column
+        for column in feature_table.columns
+        if column in {request.output_column for request in constants.ENTSOE_DATASETS.values()}
+    )
+
+    rows = [
+        ["Total feature table columns", len(feature_table.columns)],
+        ["Timestamp columns", len([column for column in timestamp_columns if column in feature_table.columns])],
+        ["Target columns", len([column for column in target_columns if column in feature_table.columns])],
+        ["Candidate feature columns", len(candidate_feature_columns)],
+        ["Fundamental/source/derived columns", len(fundamental_columns)],
+        ["Calendar columns", len(calendar_columns)],
+        ["Daily price curve columns", sum(len(hours) for hours in price_curve_groups.values())],
+        ["Daily price summary columns", len(daily_summary_columns)],
+    ]
+
+    sections = [
+        markdown_table(["Feature inventory item", "Count"], rows),
+        "",
+        "Feature groups:",
+        "",
+        f"- Passthrough ENTSO-E columns: `{passthrough_source_columns}`",
+        f"- Fundamental derived columns: `{fundamental_columns}`",
+        f"- Local calendar columns: `{calendar_columns}`",
+        f"- Daily price summary columns: `{daily_summary_columns}`",
+    ]
+
+    if price_curve_rows:
+        sections.extend(
+            [
+                "",
+                "Daily price curve lag columns:",
+                "",
+                markdown_table(["Lag group", "Column count", "Hour columns"], price_curve_rows),
+            ]
+        )
+    else:
+        sections.append("- Daily price curve lag columns: none")
+
+    return "\n".join(sections)
+
+
 def write_qa_report(
     report_path: Path,
     dataset_name: str,
     datasets: list[str],
     combined_table: pd.DataFrame,
+    feature_table: pd.DataFrame,
     date_window,
     interim_folder: Path,
     processed_csv_path: Path,
+    feature_csv_path: Path,
     imputation_report: ImputationReport,
 ) -> Path:
     """Write the required public data ingestion and QA report."""
@@ -296,6 +382,7 @@ def write_qa_report(
 
 - Dataset folder: `{dataset_name}`
 - Stage-3 CSV: `{processed_csv_path}`
+- Feature CSV: `{feature_csv_path}`
 - Data source: ENTSO-E Transparency Platform REST API
 - API endpoint: `{constants.ENTSOE_BASE_URL}`
 - Market: Germany/Luxembourg bidding zone (`DE-LU`)
@@ -346,6 +433,10 @@ Rules:
 - `wind_offshore_forecast_mw`: below 0 or above 30000
 
 {markdown_table(["Column", "Obvious outlier count"], outlier_rows)}
+
+## Feature Table Inventory
+
+{summarize_feature_columns(feature_table)}
 
 ## Timestamp Alignment
 
@@ -413,19 +504,21 @@ def main() -> None:
         start_utc=date_window.start_utc,
         end_utc=date_window.end_utc,
     )
+    feature_dataset = write_feature_dataset(
+        combined.path,
+        folders.processed / "germany_model_features.csv",
+    )
     report_path = write_qa_report(
         folders.processed / "data_qa_report.md",
         folders.name,
         args.datasets,
         combined.table,
+        feature_dataset.table,
         date_window,
         folders.interim,
         combined.path,
+        feature_dataset.path,
         combined.imputation_report,
-    )
-    feature_dataset = write_feature_dataset(
-        combined.path,
-        folders.processed / "germany_model_features.csv",
     )
     expected_rows = expected_hourly_rows(date_window.start_utc, date_window.end_utc)
     imputation = combined.imputation_report
