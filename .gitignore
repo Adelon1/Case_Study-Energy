@@ -11,9 +11,8 @@ __pycache__/
 # Runtime logs
 *.log
 
-# Raw API downloads are reproducible and bulky
-data/01_raw/*
-!data/01_raw/.gitkeep
+# Data downloads and generated tables are reproducible and bulky
+data/
 
 # LaTeX build byproducts
 *.aux
