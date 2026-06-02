@@ -99,7 +99,7 @@ def apply_interactive_settings(args: SimpleNamespace) -> SimpleNamespace:
         args.period_days = 1
         args.block = "baseload"
     elif args.forecast_setup == "hourly_period":
-        args.period_days = int(ask("Period length in days", str(args.period_days)))
+        args.period_days = 1
         args.block = "baseload"
     else:
         args.period_days = int(ask("Period length in days", str(args.period_days)))
@@ -234,7 +234,7 @@ def baseline_summary_path(
     """Return expected baseline validation-summary path."""
 
     name_parts = ["baseline_model", forecast_setup]
-    if forecast_setup in {"hourly_period", "period_average"}:
+    if forecast_setup == "period_average":
         name_parts.append(f"{period_days}d_{block}")
     baseline_folder = output_base_folder / "__".join(name_parts)
     return baseline_folder / "validation_summary.csv"
@@ -439,7 +439,7 @@ def main() -> None:
         model_run_name(model_module, model_options),
         args.forecast_setup,
     ]
-    if args.forecast_setup in {"hourly_period", "period_average"}:
+    if args.forecast_setup == "period_average":
         output_name_parts.append(f"{args.period_days}d_{args.block}")
     output_folder = output_base_folder / "__".join(output_name_parts)
     output_folder.mkdir(parents=True, exist_ok=True)

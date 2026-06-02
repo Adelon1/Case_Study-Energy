@@ -98,19 +98,13 @@ def apply_interactive_settings(args: SimpleNamespace) -> SimpleNamespace:
     )
     args.start = ask("Delivery start date DD-MM-YYYY", args.start)
     args.end = ask("Exclusive delivery end date DD-MM-YYYY", args.end)
-    period_days_default = args.period_days
-    if period_days_default is None and args.start and args.end:
-        period_days_default = max(
-            1,
-            int(
-                (
-                    pd.to_datetime(args.end, format="%d-%m-%Y")
-                    - pd.to_datetime(args.start, format="%d-%m-%Y")
-                )
-                / pd.Timedelta(days=1)
-            ),
+    inferred_period_days = infer_period_days(args.start, args.end)
+    if args.forecast_setup == "period_average":
+        args.period_days = int(
+            ask("Period row length in days", str(args.period_days or inferred_period_days))
         )
-    args.period_days = int(ask("Period length in days", str(period_days_default or 1)))
+    else:
+        args.period_days = inferred_period_days
     args.block = ask_choice(
         "Block",
         ["baseload", "peakload", "offpeak", "peak_base_spread", "all"],
@@ -133,6 +127,23 @@ def parse_delivery_date(date_text: str) -> str:
     """Convert DD-MM-YYYY input into YYYY-MM-DD for pandas."""
 
     return pd.to_datetime(date_text, format="%d-%m-%Y").strftime("%Y-%m-%d")
+
+
+def infer_period_days(start_text: str | None, end_text: str | None) -> int:
+    """Infer delivery period length from interactive dates."""
+
+    if not start_text or not end_text:
+        return 1
+    return max(
+        1,
+        int(
+            (
+                pd.to_datetime(end_text, format="%d-%m-%Y")
+                - pd.to_datetime(start_text, format="%d-%m-%Y")
+            )
+            / pd.Timedelta(days=1)
+        ),
+    )
 
 
 def first_block(blocks: str | list[str]) -> str:

@@ -104,7 +104,7 @@ def model_folder_for(
         model_run_name(model_module, model_options),
         forecast_setup,
     ]
-    if forecast_setup in {"hourly_period", "period_average"}:
+    if forecast_setup == "period_average":
         name_parts.append(f"{period_days or 'period'}d_{block}")
     return base_folder / "__".join(name_parts)
 
