@@ -1,0 +1,115 @@
+{
+  "bundles": {
+    "all_hourly_fundamentals": [
+      "load_forecast_mw",
+      "solar_forecast_mw",
+      "wind_onshore_forecast_mw",
+      "wind_offshore_forecast_mw",
+      "wind_total_forecast_mw",
+      "renewable_total_forecast_mw",
+      "residual_load_forecast_mw",
+      "wind_share_of_load",
+      "solar_share_of_load",
+      "renewable_share_of_load"
+    ],
+    "core_hourly_fundamentals": [
+      "load_forecast_mw",
+      "solar_forecast_mw",
+      "wind_total_forecast_mw"
+    ],
+    "linear_calendar": [
+      "is_holiday",
+      "local_hour_sin",
+      "local_hour_cos",
+      "local_weekday_sin",
+      "local_weekday_cos",
+      "local_month_sin",
+      "local_month_cos",
+      "local_day_of_year_sin",
+      "local_day_of_year_cos",
+      "local_weekday_1",
+      "local_weekday_2",
+      "local_weekday_3",
+      "local_weekday_4",
+      "local_weekday_5",
+      "local_weekday_6"
+    ],
+    "period_source_fundamentals": [
+      "load_forecast_mw",
+      "solar_forecast_mw",
+      "wind_total_forecast_mw",
+      "renewable_total_forecast_mw",
+      "residual_load_forecast_mw"
+    ],
+    "core_period_features": [
+      "load_forecast_mw_mean",
+      "solar_forecast_mw_mean",
+      "wind_total_forecast_mw_mean",
+      "target_lag_1",
+      "target_lag_2"
+    ]
+  },
+  "policies": {
+    "baseline_model": {
+      "hourly_day_ahead": [
+        "day_ahead_price_features"
+      ],
+      "hourly_period": [],
+      "period_average": [
+        "period_target_lags"
+      ]
+    },
+    "lear_model": {
+      "hourly_day_ahead": [
+        "all_hourly_fundamentals",
+        "linear_calendar",
+        "day_ahead_price_features"
+      ],
+      "hourly_period": [
+        "all_hourly_fundamentals",
+        "linear_calendar"
+      ],
+      "period_average": [
+        "all_numeric_period_without_raw_calendar"
+      ]
+    },
+    "ransac_lasso_model": {
+      "hourly_day_ahead": [
+        "all_hourly_fundamentals",
+        "linear_calendar",
+        "day_ahead_price_features"
+      ],
+      "hourly_period": [
+        "all_hourly_fundamentals",
+        "linear_calendar"
+      ],
+      "period_average": [
+        "all_numeric_period_without_raw_calendar"
+      ]
+    },
+    "boosted_tree_model": {
+      "hourly_day_ahead": [
+        "core_hourly_fundamentals",
+        "day_ahead_price_curve_features"
+      ],
+      "hourly_period": [
+        "core_hourly_fundamentals"
+      ],
+      "period_average": [
+        "core_period_features"
+      ]
+    },
+    "theil_sen_model": {
+      "hourly_day_ahead": [
+        "core_hourly_fundamentals",
+        "day_ahead_price_curve_features"
+      ],
+      "hourly_period": [
+        "core_hourly_fundamentals"
+      ],
+      "period_average": [
+        "core_period_features"
+      ]
+    }
+  }
+}

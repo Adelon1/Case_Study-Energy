@@ -15,7 +15,9 @@ Everything else in this file is a helper used to construct that one returned
 from __future__ import annotations
 
 import importlib
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -79,68 +81,19 @@ def build_modelling_dataset(
 
 
 # ---------------------------------------------------------------------------
-# Feature policy constants
+# Feature policy constants and config
 # ---------------------------------------------------------------------------
 
-# These lists encode the final modelling decisions. They are deliberately kept
-# here, close to ``build_modelling_dataset``, because this module owns the
-# question "which columns are legal and useful for this modelling setup?".
+# The feature-policy decisions live in ``feature_sets.json`` so new models can
+# be added without editing the dataset-building logic. Python still owns dynamic
+# bundles such as "all price_d*_hXX columns" because those are generated column
+# patterns, not fixed names.
 
 PERIOD_TARGET_COLUMN = "period_average_price_eur_per_mwh"
-LINEAR_MODELS = {"lear_model", "ransac_lasso_model"}
-COMPACT_MODELS = {"boosted_tree_model", "theil_sen_model"}
-BASELINE_MODEL = "baseline_model"
-
-FUNDAMENTAL_FEATURES = [
-    "load_forecast_mw",
-    "solar_forecast_mw",
-    "wind_onshore_forecast_mw",
-    "wind_offshore_forecast_mw",
-    "wind_total_forecast_mw",
-    "renewable_total_forecast_mw",
-    "residual_load_forecast_mw",
-    "wind_share_of_load",
-    "solar_share_of_load",
-    "renewable_share_of_load",
-]
-
-LINEAR_CALENDAR_FEATURES = [
-    "is_holiday",
-    "local_hour_sin",
-    "local_hour_cos",
-    "local_weekday_sin",
-    "local_weekday_cos",
-    "local_month_sin",
-    "local_month_cos",
-    "local_day_of_year_sin",
-    "local_day_of_year_cos",
-]
-
-# Monday (local_weekday_0) is dropped on purpose: with all seven dummies the set
-# is collinear with the intercept, which destabilises the linear LEAR weights.
-WEEKDAY_DUMMY_FEATURES = [f"local_weekday_{weekday}" for weekday in range(1, 7)]
+FEATURE_CONFIG_PATH = Path(__file__).with_name("feature_sets.json")
 DAILY_PRICE_CURVE_LAGS = [1, 2, 3, 7]
 DAILY_PRICE_SUMMARY_LAGS = [1, 7]
-CORE_HOURLY_FUNDAMENTALS = [
-    "load_forecast_mw",
-    "solar_forecast_mw",
-    "wind_total_forecast_mw",
-]
-PERIOD_FUNDAMENTAL_COLUMNS = [
-    "load_forecast_mw",
-    "solar_forecast_mw",
-    "wind_total_forecast_mw",
-    "renewable_total_forecast_mw",
-    "residual_load_forecast_mw",
-]
 PERIOD_TARGET_LAGS = [1, 2, 4, 7, 12]
-CORE_PERIOD_FEATURES = [
-    "load_forecast_mw_mean",
-    "solar_forecast_mw_mean",
-    "wind_total_forecast_mw_mean",
-    "target_lag_1",
-    "target_lag_2",
-]
 RAW_PERIOD_CALENDAR_FEATURES = {"period_month", "period_start_weekday"}
 
 
@@ -168,8 +121,26 @@ def require_columns(table: pd.DataFrame, columns: list[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Hourly feature selection
+# Feature-policy resolver
 # ---------------------------------------------------------------------------
+
+
+def load_feature_config(path: str | Path = FEATURE_CONFIG_PATH) -> dict[str, object]:
+    """Read the model/setup to feature-bundle mapping."""
+
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def configured_bundle(config: dict[str, object], bundle_name: str) -> list[str]:
+    """Return a literal feature bundle from ``feature_sets.json``."""
+
+    bundles = config.get("bundles", {})
+    if not isinstance(bundles, dict) or bundle_name not in bundles:
+        raise ValueError(f"Unknown feature bundle: {bundle_name}")
+    columns = bundles[bundle_name]
+    if not isinstance(columns, list) or not all(isinstance(column, str) for column in columns):
+        raise ValueError(f"Feature bundle '{bundle_name}' must be a list of column names.")
+    return columns.copy()
 
 
 def day_ahead_price_curve_features(table: pd.DataFrame) -> list[str]:
@@ -201,40 +172,77 @@ def day_ahead_price_features(table: pd.DataFrame) -> list[str]:
     return columns
 
 
-def select_hourly_features(
+def all_numeric_period_without_raw_calendar(period_rows: pd.DataFrame) -> list[str]:
+    """All numeric period features except target, timestamp, and raw calendar integers."""
+
+    excluded = {
+        "period_start",
+        constants.TIMESTAMP_COLUMN,
+        "period_end",
+        PERIOD_TARGET_COLUMN,
+        *RAW_PERIOD_CALENDAR_FEATURES,
+    }
+    return [
+        column
+        for column in period_rows.columns
+        if column not in excluded and pd.api.types.is_numeric_dtype(period_rows[column])
+    ]
+
+
+def resolve_feature_bundle(
+    table: pd.DataFrame,
+    config: dict[str, object],
+    bundle_name: str,
+) -> list[str]:
+    """Resolve one configured bundle name into concrete table columns."""
+
+    if bundle_name == "day_ahead_price_curve_features":
+        return day_ahead_price_curve_features(table)
+    if bundle_name == "day_ahead_price_features":
+        return day_ahead_price_features(table)
+    if bundle_name == "period_target_lags":
+        return existing_columns(table, [f"target_lag_{lag}" for lag in PERIOD_TARGET_LAGS])
+    if bundle_name == "all_numeric_period_without_raw_calendar":
+        return all_numeric_period_without_raw_calendar(table)
+    return require_columns(table, configured_bundle(config, bundle_name))
+
+
+def resolve_feature_policy(
     table: pd.DataFrame,
     model_name: str,
     forecast_setup: str,
 ) -> tuple[list[str], str]:
-    """Select feature columns for hourly forecast setups."""
+    """Select feature columns using ``feature_sets.json``."""
 
-    if forecast_setup not in {"hourly_day_ahead", "hourly_period"}:
-        raise ValueError(f"Unsupported hourly forecast setup: {forecast_setup}")
-
-    full_price_columns = day_ahead_price_features(table)
-    curve_price_columns = day_ahead_price_curve_features(table)
-
-    if model_name == BASELINE_MODEL:
-        if forecast_setup == "hourly_day_ahead":
-            return full_price_columns, "baseline_hourly_price_lags"
-        return [], "baseline_historical_mean"
-
-    if model_name in LINEAR_MODELS:
-        base_columns = (
-            existing_columns(table, FUNDAMENTAL_FEATURES)
-            + require_columns(table, LINEAR_CALENDAR_FEATURES + WEEKDAY_DUMMY_FEATURES)
+    config = load_feature_config()
+    policies = config.get("policies", {})
+    if not isinstance(policies, dict) or model_name not in policies:
+        raise ValueError(
+            f"No feature policy configured for model '{model_name}'. "
+            f"Add it to {FEATURE_CONFIG_PATH}."
         )
-        if forecast_setup == "hourly_day_ahead":
-            return list(dict.fromkeys(base_columns + full_price_columns)), "linear_hourly_all_safe_features"
-        return list(dict.fromkeys(base_columns)), "linear_hourly_fundamentals_calendar"
+    model_policy = policies[model_name]
+    if not isinstance(model_policy, dict) or forecast_setup not in model_policy:
+        raise ValueError(
+            f"No feature policy configured for model '{model_name}' and setup '{forecast_setup}'."
+        )
 
-    if model_name in COMPACT_MODELS:
-        base_columns = require_columns(table, CORE_HOURLY_FUNDAMENTALS)
-        if forecast_setup == "hourly_day_ahead":
-            return list(dict.fromkeys(base_columns + curve_price_columns)), "compact_hourly_core_fundamentals_price_curves"
-        return base_columns, "compact_hourly_core_fundamentals"
+    bundle_names = model_policy[forecast_setup]
+    if not isinstance(bundle_names, list) or not all(
+        isinstance(bundle_name, str) for bundle_name in bundle_names
+    ):
+        raise ValueError(
+            f"Feature policy for model '{model_name}' and setup '{forecast_setup}' "
+            "must be a list of bundle names."
+        )
 
-    raise ValueError(f"Unsupported model for hourly feature selection: {model_name}")
+    columns: list[str] = []
+    for bundle_name in bundle_names:
+        columns.extend(resolve_feature_bundle(table, config, bundle_name))
+
+    unique_columns = list(dict.fromkeys(columns))
+    feature_policy = "+".join(bundle_names) if bundle_names else "no_features_historical_mean"
+    return unique_columns, feature_policy
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +273,7 @@ def build_hourly_dataset(
     table = feature_table.copy()
     table[constants.TIMESTAMP_COLUMN] = pd.to_datetime(table[constants.TIMESTAMP_COLUMN], utc=True)
     table = table.sort_values(constants.TIMESTAMP_COLUMN).reset_index(drop=True)
-    feature_columns, feature_policy = select_hourly_features(table, model_name, forecast_setup)
+    feature_columns, feature_policy = resolve_feature_policy(table, model_name, forecast_setup)
     return ModellingDataset(
         table=table,
         target_column=constants.TARGET_COLUMN,
@@ -317,7 +325,7 @@ def build_period_average_dataset(
         PERIOD_TARGET_COLUMN: (constants.TARGET_COLUMN, "mean"),
         "period_n_hours": (constants.TARGET_COLUMN, "size"),
     }
-    for column in PERIOD_FUNDAMENTAL_COLUMNS:
+    for column in configured_bundle(load_feature_config(), "period_source_fundamentals"):
         if column in table.columns:
             aggregations[f"{column}_mean"] = (column, "mean")
             aggregations[f"{column}_min"] = (column, "min")
@@ -339,7 +347,11 @@ def build_period_average_dataset(
         2 * np.pi * period_rows["period_start_weekday"] / 7
     )
 
-    feature_columns, feature_policy = select_period_average_features(period_rows, model_name)
+    feature_columns, feature_policy = resolve_feature_policy(
+        period_rows,
+        model_name,
+        "period_average",
+    )
     period_rows = period_rows.dropna(subset=[PERIOD_TARGET_COLUMN]).reset_index(drop=True)
     return ModellingDataset(
         table=period_rows,
@@ -348,34 +360,3 @@ def build_period_average_dataset(
         forecast_setup="period_average",
         feature_policy=feature_policy,
     )
-
-
-def select_period_average_features(
-    period_rows: pd.DataFrame,
-    model_name: str,
-) -> tuple[list[str], str]:
-    """Select feature columns for direct period-average forecasts."""
-
-    if model_name == BASELINE_MODEL:
-        columns = existing_columns(period_rows, [f"target_lag_{lag}" for lag in PERIOD_TARGET_LAGS])
-        return columns, "baseline_period_target_lags" if columns else "baseline_historical_mean"
-
-    if model_name in LINEAR_MODELS:
-        excluded = {
-            "period_start",
-            constants.TIMESTAMP_COLUMN,
-            "period_end",
-            PERIOD_TARGET_COLUMN,
-            *RAW_PERIOD_CALENDAR_FEATURES,
-        }
-        columns = [
-            column
-            for column in period_rows.columns
-            if column not in excluded and pd.api.types.is_numeric_dtype(period_rows[column])
-        ]
-        return columns, "linear_period_all_numeric_without_raw_calendar"
-
-    if model_name in COMPACT_MODELS:
-        return require_columns(period_rows, CORE_PERIOD_FEATURES), "compact_period_core_fundamentals_target_lags"
-
-    raise ValueError(f"Unsupported model for period-average feature selection: {model_name}")
