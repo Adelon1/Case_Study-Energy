@@ -58,23 +58,12 @@ Environment variables (loaded from `.env`, never committed):
 # 2. Validate the baseline
 .venv/bin/python pipeline_steps/02_validate_model.py
 
-# 3. Validate the headline LEAR model
+# 3. Validate the headline/improved model
 .venv/bin/python pipeline_steps/02_validate_model.py
 
-# 4. Generate validation figures
-.venv/bin/python pipeline_steps/03_plot_validation.py
-
-# 5. Translate a period into curve views
-.venv/bin/python pipeline_steps/05_translate_curve_view.py
-
-# 6. (optional) AI commentary for one curve view
-.venv/bin/python pipeline_steps/06_generate_ai_commentary.py
-```
-
-Train on one chosen part of a date window and predict the remaining part:
-
-```bash
-.venv/bin/python pipeline_steps/04_predict_window.py
+# 4. Run one forecast-view workflow:
+#    train/predict window -> curve translation -> plots -> optional AI commentary
+.venv/bin/python pipeline_steps/03_run_forecast_view.py
 ```
 
 ## Repository layout
@@ -83,19 +72,16 @@ Train on one chosen part of a date window and predict the remaining part:
 pipeline_steps/                  # runnable entry points, numbered in run order
   01_build_dataset.py            # download → parse → combine → QA → features
   02_validate_model.py           # rolling validation, metrics, bands, artifacts
-  03_plot_validation.py          # forecast-vs-actual, MAE-by-hour, residual figures
-  04_predict_window.py           # one chosen train/predict window
-  05_translate_curve_view.py     # hourly forecast → curve views + signal
-  06_generate_ai_commentary.py   # LLM commentary with logging + fallback
+  03_run_forecast_view.py        # train/predict window → curve view → plots → optional AI
 
 pipeline_helpers/
   01_entsoe_data/                   # ingestion, parsing, QA, feature engineering
   02_modelling/                     # models, validation, metrics, prediction bands
-  03_curve_translation/             # blocks, benchmarks, band-driven signal
+  03_curve_translation/             # blocks, benchmarks, signal, AI commentary helper
 
 data/        01_raw/ 02_interim/ 03_processed/   (generated; not tracked)
 models/      validation runs and saved artifacts per model
-outputs/     figures/ and 03_curve_translation/ reports
+outputs/     human-facing forecast views, plots, reports, and commentary
 ```
 
 ## Outputs
@@ -109,9 +95,11 @@ outputs/     figures/ and 03_curve_translation/ reports
 | `models/<dataset>/<run>/validation_metrics.csv` | one row per parameter × fold |
 | `models/<dataset>/<run>/predictions.csv` | out-of-sample predictions with `y_pred_lower/upper` bands |
 | `models/<dataset>/<run>/model.joblib`, `metadata.json` | saved model + run metadata |
-| `outputs/figures/<run>/*.png` | validation figures |
-| `outputs/03_curve_translation/.../curve_view_report.md` | prompt-curve fair-value view + signal |
-| `outputs/03_curve_translation/.../ai_commentary.md` | optional LLM (or fallback) commentary |
+| `outputs/<dataset>/<period>/<model_setup>/predictions.csv` | one chosen train/predict window |
+| `outputs/<dataset>/<period>/<model_setup>/curve_view_summary.csv` | fair value, benchmark, edge, signal |
+| `outputs/<dataset>/<period>/<model_setup>/curve_view_report.md` | prompt-curve fair-value report |
+| `outputs/<dataset>/<period>/<model_setup>/plots/*.png` | forecast, band, block, signal, and heatmap figures |
+| `outputs/<dataset>/<period>/<model_setup>/curve_translation/<block>/ai_commentary.md` | optional LLM or fallback commentary |
 
 ## Headline result
 

@@ -1,30 +1,21 @@
-"""Pipeline step: generate logged AI commentary for a curve-view summary.
+"""Generate logged AI commentary for a one-row curve-view summary.
 
-Example:
-    .venv/bin/python pipeline_steps/06_generate_ai_commentary.py
-
-The script calls an OpenAI model using ``OPENAI_API_KEY`` from ``.env`` or the
-process environment. It logs the prompt, output, and failures next to the
-generated commentary.
+This is a helper used by the forecast-view pipeline, not a standalone pipeline
+step. It calls an OpenAI model using ``OPENAI_API_KEY`` from ``.env`` or the
+process environment, logs prompt/output/failures, and writes a deterministic
+fallback if the API is unavailable.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 
 import pandas as pd
 import requests
 from dotenv import load_dotenv
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
@@ -32,27 +23,6 @@ OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 
 class OpenAIRequestError(RuntimeError):
     """Raised when the OpenAI API returns a non-success response."""
-
-
-def parse_command_line_arguments() -> SimpleNamespace:
-    """Ask for commentary generation settings."""
-
-    summary = ask("Curve-view summary CSV", "")
-    env = ask("Env file", ".env")
-    output_folder = ask("Output folder", "")
-    return SimpleNamespace(
-        summary=summary,
-        env=env,
-        output_folder=output_folder or None,
-    )
-
-
-def ask(prompt: str, default: str | None = None) -> str:
-    """Ask one terminal question."""
-
-    suffix = f" [{default}]" if default is not None else ""
-    value = input(f"{prompt}{suffix}: ").strip()
-    return value or (default or "")
 
 
 def utc_timestamp_slug() -> str:
@@ -274,16 +244,3 @@ def generate_commentary(
     print(f"Prompt log saved: {prompt_log_path}")
     print(f"Output log saved: {output_log_path}")
     return commentary_path
-
-
-def main() -> None:
-    """Generate commentary and required logs."""
-
-    args = parse_command_line_arguments()
-    if not args.summary:
-        raise ValueError("Curve-view summary CSV is required.")
-    generate_commentary(args.summary, args.env, args.output_folder)
-
-
-if __name__ == "__main__":
-    main()

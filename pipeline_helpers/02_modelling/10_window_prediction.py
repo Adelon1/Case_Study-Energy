@@ -69,6 +69,14 @@ class PredictionSource:
     retrained: bool
 
 
+@dataclass(frozen=True)
+class BestParamsResult:
+    """Validated or fallback model parameters plus where they came from."""
+
+    params: dict[str, object]
+    source: str
+
+
 def build_model_options(
     regularization: str | None = None,
     target_transform: str | None = None,
@@ -135,31 +143,43 @@ def read_best_params(
     model_module,
     model_options: dict[str, object],
     feature_columns: list[str] | None = None,
-) -> dict[str, object]:
-    """Read best params from artifacts, falling back to validation summary or first grid row."""
+) -> BestParamsResult:
+    """Read best params and report the source used.
+
+    The preferred source is ``best_params.json`` from ``02_validate_model.py``.
+    If no validation artifact exists, the function falls back to the first model
+    grid row and prints a warning so the user knows the prediction is not using
+    tuned hyperparameters.
+    """
 
     model_folder = Path(model_folder)
     best_params_path = model_folder / "best_params.json"
     if best_params_path.exists():
-        return read_json(best_params_path)
+        return BestParamsResult(read_json(best_params_path), str(best_params_path))
 
     metadata_path = model_folder / "metadata.json"
     if metadata_path.exists():
         metadata = read_json(metadata_path)
         best_params = metadata.get("best_params")
         if isinstance(best_params, dict):
-            return best_params
+            return BestParamsResult(best_params, str(metadata_path))
 
     summary_path = model_folder / "validation_summary.csv"
     if summary_path.exists():
         summary = pd.read_csv(summary_path, sep=None, engine="python")
         if "params" in summary.columns and not summary.empty:
-            return json.loads(summary.iloc[0]["params"])
+            return BestParamsResult(json.loads(summary.iloc[0]["params"]), str(summary_path))
 
-    return model_module.build_param_grid(
+    fallback_params = model_module.build_param_grid(
         **model_options,
         feature_columns=feature_columns,
     )[0]
+    print(
+        "Warning: no validated best params were found in "
+        f"{model_folder}. Falling back to first model grid row: {fallback_params}. "
+        "Run pipeline_steps/02_validate_model.py first for tuned hyperparameters."
+    )
+    return BestParamsResult(fallback_params, "fallback_first_grid_row")
 
 
 def prediction_file_covers(predictions_path: str | Path, period: PredictionPeriod) -> bool:
@@ -219,6 +239,7 @@ def save_window_prediction_result(
     model_module,
     model_options: dict[str, object],
     best_params: dict[str, object],
+    best_params_source: str,
     output_folder: str | Path,
     artifact_subfolder: str,
     forecast_setup: str,
@@ -269,6 +290,7 @@ def save_window_prediction_result(
             "model": model_module.MODEL_NAME,
             "model_options": model_options,
             "params": metadata_params,
+            "params_source": best_params_source,
             "feature_csv": str(feature_path),
             "forecast_setup": forecast_setup,
             "feature_policy": feature_policy,
@@ -306,6 +328,7 @@ def train_and_predict_window(
     block: str = "baseload",
     artifact_parent: str = "window_predictions",
     artifact_subfolder: str | None = None,
+    params_folder: str | Path | None = None,
 ) -> PeriodPredictionResult:
     """Train on one explicit window and predict one explicit window.
 
@@ -359,12 +382,14 @@ def train_and_predict_window(
         "period_days": period_days,
         "block": block,
     }
-    best_params = read_best_params(
-        output_folder,
+    best_params_result = read_best_params(
+        params_folder or output_folder,
         model_module,
         grid_options,
         feature_columns=feature_columns,
     )
+    best_params = best_params_result.params
+    print(f"Using model params from: {best_params_result.source}")
     prediction_result = train_predict_window(
         table=table,
         model_module=model_module,
@@ -388,6 +413,7 @@ def train_and_predict_window(
         model_module=model_module,
         model_options=model_options,
         best_params=best_params,
+        best_params_source=best_params_result.source,
         output_folder=output_folder,
         artifact_subfolder=artifact_subfolder or f"{artifact_parent}/{window_slug(window)}",
         forecast_setup=forecast_setup,

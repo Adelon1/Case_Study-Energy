@@ -506,24 +506,25 @@ not systematically long or short. The tail MAEs being larger than the headline M
 exactly what theory predicts — spikes and troughs are harder — and is why the tail
 metrics are tracked separately rather than hidden inside the mean.
 
-`pipeline_steps/03_plot_validation.py` reads a run's `predictions.csv` and writes three
-figures to `outputs/figures/<run-name>/`:
+`pipeline_steps/03_run_forecast_view.py` writes the Task-3 forecast-view figures into
+the selected output folder:
 
-- `forecast_vs_actual.png` — forecast line, actuals, and the P10–P90 band as a shaded
+- `forecast_actual_band.png` — forecast line, actuals, and the P10–P90 band as a shaded
   region over a recent window.
-- `mae_by_hour.png` — MAE by hour of day, showing where the model is strong/weak.
-- `residual_distribution.png` — residual histogram with the band edges and coverage
-  annotated.
+- `price_duration_curve.png` — sorted predicted and actual prices, highlighting tails.
+- `fair_value_vs_benchmark.png` — forecast fair value versus benchmark by block.
+- `signal_by_block.png` — edge versus benchmark, coloured by direction.
+- `forecast_heatmap.png` — hourly forecast shape by date and local delivery hour.
 
 These satisfy the "at least two figures" requirement and visually demonstrate the band
-calibration.
+calibration, block-level fair values, and trading signal.
 
 ---
 
 ## 11. Prompt-curve translation: from hourly forecast to a tradable view
 
 This is Task 3, implemented in `pipeline_helpers/03_curve_translation/` and driven by
-`pipeline_steps/05_translate_curve_view.py`. It is where the forecast becomes a trade.
+`pipeline_steps/03_run_forecast_view.py`. It is where the forecast becomes a trade.
 
 ### 11.1 Blocks
 
@@ -580,23 +581,24 @@ returns, flow disruptions, market-regime changes, recent model error exceeding v
 error, or liquidity/execution constraints. Together these satisfy the Task-3
 requirements for a concrete signal, a trading interpretation, and invalidation rules.
 
-`05_translate_curve_view.py` prints a descriptive log: a "Forecast source" section
-(model, source, retrained yes/no, whether an empirical band is available) and a
-per-block "Curve views" section (signal, fair value + band, benchmark, edge, margin,
-rationale, desk action, coverage).
+`03_run_forecast_view.py` prints the forecast setup, train/prediction windows, predicted
+row coverage, and a per-block signal summary (signal, fair value, benchmark, edge). It
+also writes `curve_view_summary.csv`, `curve_view_report.md`, per-block reports under
+`curve_translation/<block>/`, and the plots listed above.
 
 ---
 
 ## 12. AI-accelerated workflow
 
-Task 4 is `pipeline_steps/06_generate_ai_commentary.py`: a single programmatic LLM step,
-not a chat transcript. It reads a `curve_view_summary.csv`, builds a constrained prompt
-that is forbidden from inventing numbers (it may only use the computed values), calls
-the **OpenAI Responses API** with the key read from `OPENAI_API_KEY` (environment
-only), and writes `ai_commentary.md`. Every run logs the prompt, the output, and any
-failure as JSON under `ai_logs/`. If the API is unavailable or out of quota, a
-**deterministic fallback** writes a templated commentary from the same numbers, so the
-pipeline never breaks. The model name comes from `OPENAI_MODEL` (default
+Task 4 is implemented as the helper `pipeline_helpers/03_curve_translation/03_ai_commentary.py`
+and is called programmatically from `03_run_forecast_view.py` when requested. It reads a
+one-row `curve_view_summary.csv`, builds a constrained prompt that is forbidden from
+inventing numbers (it may only use the computed values), calls the **OpenAI Responses
+API** with the key read from `OPENAI_API_KEY` (environment only), and writes
+`ai_commentary.md`. Every run logs the prompt, the output, and any failure as JSON under
+`ai_logs/`. If the API is unavailable or out of quota, a **deterministic fallback**
+writes a templated commentary from the same numbers, so the pipeline never breaks. The
+model name comes from `OPENAI_MODEL` (default
 `gpt-4.1-mini`). This meets the minimum AI requirements — called from code, prompts /
 outputs / failures logged, no committed secrets — and is intentionally kept minimal.
 
@@ -608,10 +610,8 @@ Top-level pipeline steps (`pipeline_steps/`, numbered in run order):
 
 - `01_build_dataset.py` — download, parse, combine, QA, feature table.
 - `02_validate_model.py` — rolling validation, metrics, bands, artifacts.
-- `03_plot_validation.py` — the three validation figures.
-- `04_predict_window.py` — train once on a chosen window and predict the remaining window.
-- `05_translate_curve_view.py` — curve fair-value translation (+ optional commentary).
-- `06_generate_ai_commentary.py` — standalone LLM commentary.
+- `03_run_forecast_view.py` — train once on a chosen window, translate it into curve views,
+  write plots/reports, and optionally call AI commentary.
 
 Data helpers (`pipeline_helpers/01_entsoe_data/`): `00_constants.py`, `01_date_windows.py`,
 `02_dataset_folders.py`, `03_entsoe_api.py`, `04_entsoe_xml_to_csv.py`,
@@ -650,14 +650,8 @@ cp .env.example .env        # fill ENTSOE_API_KEY (and optional OPENAI_API_KEY)
 # 3. validate the headline LEAR model
 .venv/bin/python pipeline_steps/02_validate_model.py
 
-# 4. figures
-.venv/bin/python pipeline_steps/03_plot_validation.py
-
-# 5. curve translation
-.venv/bin/python pipeline_steps/05_translate_curve_view.py
-
-# 6. AI commentary
-.venv/bin/python pipeline_steps/06_generate_ai_commentary.py
+# 4. forecast view: prediction -> curve translation -> plots -> optional AI
+.venv/bin/python pipeline_steps/03_run_forecast_view.py
 ```
 
 ---
