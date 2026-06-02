@@ -83,8 +83,7 @@ def model_folder_for(
     model_name: str,
     model_options: dict[str, object],
     output_base_folder: str | Path | None = None,
-    target_option: str = "hourly",
-    feature_mode: str = "period_hourly_safe",
+    forecast_setup: str = "hourly_period",
     period_days: int | None = None,
     block: str = "baseload",
 ) -> Path:
@@ -98,11 +97,9 @@ def model_folder_for(
     )
     name_parts = [
         model_run_name(model_module, model_options),
-        target_option,
+        forecast_setup,
     ]
-    if target_option == "hourly":
-        name_parts.append(feature_mode)
-    else:
+    if forecast_setup in {"hourly_period", "period_average"}:
         name_parts.append(f"{period_days or 'period'}d_{block}")
     return base_folder / "__".join(name_parts)
 
@@ -123,6 +120,7 @@ def read_best_params(
     model_folder: str | Path,
     model_module,
     model_options: dict[str, object],
+    feature_columns: list[str] | None = None,
 ) -> dict[str, object]:
     """Read best params from artifacts, falling back to validation summary or first grid row."""
 
@@ -137,7 +135,10 @@ def read_best_params(
         if "params" in summary.columns and not summary.empty:
             return json.loads(summary.iloc[0]["params"])
 
-    return model_module.build_param_grid(**model_options)[0]
+    return model_module.build_param_grid(
+        **model_options,
+        feature_columns=feature_columns,
+    )[0]
 
 
 def prediction_file_covers(predictions_path: str | Path, period: PredictionPeriod) -> bool:
@@ -197,8 +198,7 @@ def train_and_predict_period(
     output_folder: str | Path,
     period: PredictionPeriod,
     train_months: int = constants.TRAIN_MONTHS,
-    target_option: str = "hourly",
-    feature_mode: str = "period_hourly_safe",
+    forecast_setup: str = "hourly_period",
     period_days: int | None = None,
     block: str = "baseload",
 ) -> PeriodPredictionResult:
@@ -211,12 +211,12 @@ def train_and_predict_period(
     modelling_dataset = build_modelling_dataset(
         feature_table=feature_table,
         model_name=model_module.MODEL_NAME,
-        target_option=target_option,
-        feature_mode=feature_mode,
+        forecast_setup=forecast_setup,
         period_days=period_days,
         block=block,
     )
     table = modelling_dataset.table
+    feature_columns = modelling_dataset.feature_columns
     train_begin = add_months(period.start_utc, -train_months)
     train_end = period.start_utc
 
@@ -237,11 +237,16 @@ def train_and_predict_period(
     output_folder = Path(output_folder)
     grid_options = {
         **model_options,
-        "target_option": target_option,
+        "forecast_setup": forecast_setup,
         "period_days": period_days,
         "block": block,
     }
-    best_params = read_best_params(output_folder, model_module, grid_options)
+    best_params = read_best_params(
+        output_folder,
+        model_module,
+        grid_options,
+        feature_columns=feature_columns,
+    )
     prediction_result = train_predict_window(
         table=table,
         model_module=model_module,
@@ -254,7 +259,7 @@ def train_and_predict_period(
         ),
         split_name="period_prediction",
         fold_number=1,
-        feature_columns=modelling_dataset.feature_columns,
+        feature_columns=feature_columns,
         target_column=modelling_dataset.target_column,
     )
 
@@ -265,9 +270,14 @@ def train_and_predict_period(
     metrics_path = period_folder / "metrics.csv"
     model_path = period_folder / "model.joblib"
     metadata_path = period_folder / "metadata.json"
+    metadata_params = {
+        key: value
+        for key, value in best_params.items()
+        if key != "params_by_hour"
+    }
 
     predictions = prediction_result.predictions
-    if target_option == "period_average" and "period_end" in test_data.columns:
+    if forecast_setup == "period_average" and "period_end" in test_data.columns:
         predictions["period_end"] = test_data["period_end"]
         predictions["prediction_granularity"] = "period_average"
         predictions["block"] = block
@@ -284,13 +294,13 @@ def train_and_predict_period(
         {
             "model": model_module.MODEL_NAME,
             "model_options": model_options,
-            "params": best_params,
+            "params": metadata_params,
             "feature_csv": str(feature_path),
-            "target_option": target_option,
-            "feature_mode": modelling_dataset.feature_mode,
+            "forecast_setup": modelling_dataset.forecast_setup,
+            "feature_policy": modelling_dataset.feature_policy,
             "period_days": period_days,
             "block": block,
-            "feature_columns": modelling_dataset.feature_columns,
+            "feature_columns": feature_columns,
             "train_begin": train_begin,
             "train_end": train_end,
             "prediction_begin": period.start_utc,
@@ -316,8 +326,7 @@ def get_or_create_predictions(
     period: DeliveryPeriod,
     output_base_folder: str | Path | None = None,
     force_retrain: bool = False,
-    target_option: str = "hourly",
-    feature_mode: str = "period_hourly_safe",
+    forecast_setup: str = "hourly_period",
     period_days: int | None = None,
     block: str = "baseload",
 ) -> PredictionSource:
@@ -331,8 +340,7 @@ def get_or_create_predictions(
         model_name=model_name,
         model_options=model_options,
         output_base_folder=output_base_folder,
-        target_option=target_option,
-        feature_mode=feature_mode,
+        forecast_setup=forecast_setup,
         period_days=period_days,
         block=block,
     )
@@ -381,8 +389,7 @@ def get_or_create_predictions(
         model_options=model_options,
         output_folder=model_folder,
         period=modelling_period,
-        target_option=target_option,
-        feature_mode=feature_mode,
+        forecast_setup=forecast_setup,
         period_days=period_days,
         block=block,
     )

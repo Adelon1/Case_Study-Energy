@@ -1,12 +1,7 @@
 """Pipeline step: download XMLs, parse CSVs, and combine them into one dataset.
 
 Example:
-    .venv/bin/python pipeline_steps/01_build_dataset.py --interactive
-
-    .venv/bin/python pipeline_steps/01_build_dataset.py --mode modelling
-    --datasets day_ahead_prices load_forecast solar_forecast
-    wind_onshore_forecast wind_offshore_forecast --start 01-01-2021
-    --end 01-01-2026
+    .venv/bin/python pipeline_steps/01_build_dataset.py
 
 Each run creates matching folders:
 
@@ -17,12 +12,12 @@ Each run creates matching folders:
 
 from __future__ import annotations
 
-import argparse
 import importlib
 import re
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -49,36 +44,16 @@ send_entsoe_get_request = entsoe_api.send_entsoe_get_request
 write_dataset_csv_from_xml_files = entsoe_xml_to_csv.write_dataset_csv_from_xml_files
 
 
-def parse_command_line_arguments() -> argparse.Namespace:
-    """Read requested datasets and time range from the command line."""
+def parse_command_line_arguments() -> SimpleNamespace:
+    """Return default settings; the user edits them through prompts."""
 
-    parser = argparse.ArgumentParser(description="Build a joined ENTSO-E model dataset.")
-    parser.add_argument("--interactive", action="store_true", help="Ask for settings interactively.")
-    parser.add_argument(
-        "--datasets",
-        nargs="+",
-        default=None,
-        choices=sorted(constants.ENTSOE_DATASETS),
-        help="Dataset names to download, parse, and combine.",
+    return SimpleNamespace(
+        datasets=None,
+        start=None,
+        end=None,
+        mode="test",
+        env=".env",
     )
-    parser.add_argument(
-        "--start",
-        default=None,
-        help="Start delivery date in German local time, format DD-MM-YYYY.",
-    )
-    parser.add_argument(
-        "--end",
-        default=None,
-        help="Exclusive end delivery date in German local time, format DD-MM-YYYY.",
-    )
-    parser.add_argument(
-        "--mode",
-        choices=["test", "modelling"],
-        default="test",
-        help="Folder naming mode. 'test' uses DataSet<i>; 'modelling' uses a standard modelling name.",
-    )
-    parser.add_argument("--env", default=".env", help="Path to the local .env file.")
-    return parser.parse_args()
 
 
 def ask(prompt: str, default: str | None = None) -> str:
@@ -121,7 +96,7 @@ def ask_dataset_list(default: list[str]) -> list[str]:
             print("Please enter at least one dataset.")
 
 
-def apply_interactive_settings(args: argparse.Namespace) -> argparse.Namespace:
+def apply_interactive_settings(args: SimpleNamespace) -> SimpleNamespace:
     """Fill dataset-building settings interactively."""
 
     default_datasets = args.datasets or [
@@ -139,21 +114,18 @@ def apply_interactive_settings(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
-def validate_required_arguments(args: argparse.Namespace) -> None:
-    """Make non-interactive runs fail with a clear message when inputs are missing."""
+def validate_required_arguments(args: SimpleNamespace) -> None:
+    """Fail with a clear message when required inputs are missing."""
 
     missing = []
     if not args.datasets:
-        missing.append("--datasets")
+        missing.append("datasets")
     if not args.start:
-        missing.append("--start")
+        missing.append("start")
     if not args.end:
-        missing.append("--end")
+        missing.append("end")
     if missing:
-        raise ValueError(
-            "Missing required argument(s): "
-            f"{', '.join(missing)}. Use --interactive to answer prompts instead."
-        )
+        raise ValueError(f"Missing required setting(s): {', '.join(missing)}.")
 
 
 def expected_hourly_rows(start_utc: pd.Timestamp, end_utc: pd.Timestamp) -> int:
@@ -463,9 +435,7 @@ def main() -> None:
     """Run the full XML -> stage-2 CSV -> stage-3 CSV workflow."""
 
     started_at = time.perf_counter()
-    args = parse_command_line_arguments()
-    if args.interactive:
-        args = apply_interactive_settings(args)
+    args = apply_interactive_settings(parse_command_line_arguments())
     validate_required_arguments(args)
     date_window = parse_local_date_window(args.start, args.end)
     date_chunks = split_local_date_window_into_months(args.start, args.end)

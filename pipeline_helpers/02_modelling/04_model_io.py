@@ -3,7 +3,22 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
+
+
+def clean_json_value(value):
+    """Convert Python/pandas non-finite values into valid JSON values."""
+
+    if isinstance(value, dict):
+        return {key: clean_json_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [clean_json_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [clean_json_value(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
 def dataset_name_from_feature_path(feature_path: str | Path) -> str:
@@ -23,7 +38,11 @@ def write_json(data: dict[str, object], path: str | Path) -> None:
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, sort_keys=True, default=str), encoding="utf-8")
+    clean_data = clean_json_value(data)
+    path.write_text(
+        json.dumps(clean_data, indent=2, sort_keys=True, default=str, allow_nan=False),
+        encoding="utf-8",
+    )
 
 
 def read_json(path: str | Path) -> dict[str, object]:

@@ -15,12 +15,10 @@ MIN_PREDICTION_COVERAGE = 0.99
 # stress-period accuracy.
 SCARCITY_PRICE_THRESHOLD_EUR_PER_MWH = 150.0
 
-# LEAR regularisation search. Each hourly model picks its own penalty by
-# time-series cross-validation, so peak and night hours regularise independently
-# instead of sharing one global strength.
-LEAR_CV_SPLITS = 5
-LEAR_ALPHA_PATH_LENGTH = 50            # alphas tried along the Lasso/ElasticNet path
-LEAR_L1_RATIO_GRID = [0.2, 0.5, 0.8]  # ElasticNet mix of L1 vs L2
+# LEAR regularisation search. Rolling validation tests these values, and the
+# LEAR module chooses the best regularisation setting separately per hour.
+LEAR_ALPHA_GRID = [0.03, 0.05, 0.1, 0.3, 1.0, 3.0, 5.0, 7.0, 10.0]
+LEAR_L1_RATIO_GRID = [0.2, 0.5, 0.8]  # ElasticNet mix of L1 vs L2.
 RIDGE_ALPHA_GRID = [0.01, 0.1, 1.0, 10.0, 100.0]
 
 # Model selection: MAE first, with stress metrics as tie-breakers.
@@ -44,3 +42,5 @@ METRIC_NAMES = [
 # P10/P90 gives an 80% empirical prediction interval around each point forecast.
 BAND_LOWER_QUANTILE = 0.10
 BAND_UPPER_QUANTILE = 0.90
+
+FORECAST_SETUPS = ["hourly_day_ahead", "hourly_period", "period_average"]

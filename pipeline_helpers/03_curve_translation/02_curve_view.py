@@ -140,7 +140,7 @@ def build_benchmark(
 
     if method == "manual":
         if manual_value is None:
-            raise ValueError("Manual benchmark needs --curve-price.")
+            raise ValueError("Manual benchmark needs a curve price.")
         return benchmark_manual(manual_value)
     if method == "trailing_average":
         return benchmark_trailing_average(feature_table, period, block)

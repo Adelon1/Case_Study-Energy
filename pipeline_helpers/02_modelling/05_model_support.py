@@ -25,9 +25,11 @@ def load_model_module(model_name: str) -> ModuleType:
     """Import a numbered model module by its stable public name."""
 
     module_name_by_model = {
-        "baseline_week_lag": "06_baseline_week_lag",
-        "lear_model": "07_lear_model",
-        "boosted_trees": "08_boosted_trees",
+        "baseline_model": "30_baseline_model",
+        "lear_model": "31_lear_model",
+        "boosted_tree_model": "32_boosted_tree_model",
+        "theil_sen_model": "33_theil_sen_model",
+        "ransac_lasso_model": "34_ransac_lasso_model",
     }
     module_name = module_name_by_model.get(model_name, model_name)
     return importlib.import_module(f"pipeline_helpers.02_modelling.{module_name}")
@@ -45,7 +47,7 @@ def model_state_diagnostics(model_state: object) -> dict[str, object]:
     """Collect optional, human-readable diagnostics from a fitted model state."""
 
     diagnostics: dict[str, object] = {}
-    for attribute in ["fitted_hours", "alpha_by_hour", "n_train_rows_by_hour", "feature_columns"]:
+    for attribute in ["alpha_by_hour"]:
         if hasattr(model_state, attribute):
             diagnostics[attribute] = getattr(model_state, attribute)
     return diagnostics

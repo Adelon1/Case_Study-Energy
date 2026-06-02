@@ -1,32 +1,19 @@
 """Pipeline step: run rolling validation and save compact model artifacts.
 
 Example:
-    .venv/bin/python pipeline_steps/02_validate_model.py \
-      --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
-      --model baseline_week_lag
+    .venv/bin/python pipeline_steps/02_validate_model.py
 
-    .venv/bin/python pipeline_steps/02_validate_model.py \
-      --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
-      --model lear_model \
-      --regularization elasticnet \
-      --target-transform raw
-
-    .venv/bin/python pipeline_steps/02_validate_model.py \
-      --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
-      --model boosted_trees
-      
-Outputs are written to ``models/<dataset-name>/<run-name>`` unless
-``--output-folder`` is provided.
+Outputs are written to ``models/<dataset-name>/<run-name>``.
 """
 
 from __future__ import annotations
 
-import argparse
 import importlib
 import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import joblib
 import pandas as pd
@@ -41,6 +28,7 @@ model_support = importlib.import_module("pipeline_helpers.02_modelling.05_model_
 modelling_dataset = importlib.import_module("pipeline_helpers.02_modelling.01_modelling_dataset")
 prediction_bands = importlib.import_module("pipeline_helpers.02_modelling.03_prediction_bands")
 validation = importlib.import_module("pipeline_helpers.02_modelling.09_validation")
+metric_functions = importlib.import_module("pipeline_helpers.02_modelling.02_metrics")
 
 default_models_base_folder = model_io.default_models_base_folder
 write_json = model_io.write_json
@@ -51,72 +39,31 @@ build_modelling_dataset = modelling_dataset.build_modelling_dataset
 add_prediction_bands = prediction_bands.add_prediction_bands
 band_coverage = prediction_bands.band_coverage
 residual_quantiles_by_hour = prediction_bands.residual_quantiles_by_hour
+calculate_metrics = metric_functions.calculate_metrics
 TimeWindow = validation.TimeWindow
 average_metrics_by_params = validation.average_metrics_by_params
 build_validation_windows = validation.build_validation_windows
 load_feature_data = validation.load_feature_data
 run_rolling_validation = validation.run_rolling_validation
+select_predictions_for_params = validation.select_predictions_for_params
 train_predict_window = validation.train_predict_window
 
+SELECTED_PER_HOUR_PARAMS = json.dumps({"selection": "per_hour_validated"}, sort_keys=True)
 
-def parse_command_line_arguments() -> argparse.Namespace:
-    """Read model validation settings from the command line."""
 
-    parser = argparse.ArgumentParser(description="Validate a forecasting model.")
-    parser.add_argument("--interactive", action="store_true", help="Ask for settings interactively.")
-    parser.add_argument(
-        "--features",
-        default="data/03_processed/germany_modelling_2021_2026/germany_model_features.csv",
-        help="Path to germany_model_features.csv.",
+def parse_command_line_arguments() -> SimpleNamespace:
+    """Return default settings; the user edits them through prompts."""
+
+    return SimpleNamespace(
+        features="data/03_processed/germany_modelling_2021_2026/germany_model_features.csv",
+        model="baseline_model",
+        output_folder=None,
+        forecast_setup="hourly_day_ahead",
+        period_days=1,
+        block="baseload",
+        regularization=None,
+        target_transform=None,
     )
-    parser.add_argument(
-        "--model",
-        default="baseline_week_lag",
-        help="Model module name inside pipeline_helpers/02_modelling.",
-    )
-    parser.add_argument(
-        "--output-folder",
-        default=None,
-        help="Base folder for validation outputs. Defaults to models/<dataset-name>.",
-    )
-    parser.add_argument(
-        "--target",
-        dest="target_option",
-        choices=["hourly", "period_average"],
-        default="hourly",
-        help="'hourly' predicts hourly prices; 'period_average' predicts period averages directly.",
-    )
-    parser.add_argument(
-        "--feature-mode",
-        choices=["day_ahead_full", "period_hourly_safe", "fundamentals_calendar_only"],
-        default="day_ahead_full",
-        help="Leakage-aware feature set for the hourly target.",
-    )
-    parser.add_argument(
-        "--period-days",
-        type=int,
-        default=1,
-        help="Delivery period length in days. Used for safe period features and Option B rows.",
-    )
-    parser.add_argument(
-        "--block",
-        choices=["baseload", "peakload", "offpeak"],
-        default="baseload",
-        help="Delivery block for period-average targets.",
-    )
-    parser.add_argument(
-        "--regularization",
-        choices=["lasso", "elasticnet", "ridge"],
-        default=None,
-        help="Regularization family for models that support it. LEAR defaults to lasso.",
-    )
-    parser.add_argument(
-        "--target-transform",
-        choices=["raw", "asinh"],
-        default=None,
-        help="Target transform for models that support it. Defaults to raw where supported.",
-    )
-    return parser.parse_args()
 
 
 def ask(prompt: str, default: str | None = None) -> str:
@@ -138,20 +85,25 @@ def ask_choice(prompt: str, choices: list[str], default: str) -> str:
         print(f"Please choose one of: {choices_text}")
 
 
-def apply_interactive_settings(args: argparse.Namespace) -> argparse.Namespace:
+def apply_interactive_settings(args: SimpleNamespace) -> SimpleNamespace:
     """Fill validation settings interactively."""
 
     args.features = ask("Feature CSV", args.features)
     args.model = ask("Model", args.model)
-    args.target_option = ask_choice("Target", ["hourly", "period_average"], args.target_option)
-    if args.target_option == "hourly":
-        args.feature_mode = ask_choice(
-            "Feature mode",
-            ["day_ahead_full", "period_hourly_safe", "fundamentals_calendar_only"],
-            args.feature_mode,
-        )
-    args.period_days = int(ask("Period length in days", str(args.period_days)))
-    args.block = ask_choice("Block", ["baseload", "peakload", "offpeak"], args.block)
+    args.forecast_setup = ask_choice(
+        "Forecast setup",
+        constants.FORECAST_SETUPS,
+        args.forecast_setup,
+    )
+    if args.forecast_setup == "hourly_day_ahead":
+        args.period_days = 1
+        args.block = "baseload"
+    elif args.forecast_setup == "hourly_period":
+        args.period_days = int(ask("Period length in days", str(args.period_days)))
+        args.block = "baseload"
+    else:
+        args.period_days = int(ask("Period length in days", str(args.period_days)))
+        args.block = ask_choice("Block", ["baseload", "peakload", "offpeak"], args.block)
     if args.model == "lear_model":
         args.regularization = ask_choice(
             "Regularization",
@@ -166,7 +118,7 @@ def apply_interactive_settings(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
-def build_model_options(args: argparse.Namespace) -> dict[str, object]:
+def build_model_options(args: SimpleNamespace) -> dict[str, object]:
     """Collect model-specific settings from command-line arguments."""
 
     options: dict[str, object] = {}
@@ -179,13 +131,13 @@ def build_model_options(args: argparse.Namespace) -> dict[str, object]:
 
 def build_grid_options(
     model_options: dict[str, object],
-    args: argparse.Namespace,
+    args: SimpleNamespace,
 ) -> dict[str, object]:
     """Add dataset context for models whose parameter grid depends on it."""
 
     return {
         **model_options,
-        "target_option": args.target_option,
+        "forecast_setup": args.forecast_setup,
         "period_days": args.period_days,
         "block": args.block,
     }
@@ -201,6 +153,49 @@ def summarize_validation(metrics: pd.DataFrame) -> pd.DataFrame:
         .sort_values(constants.MODEL_SELECTION_METRICS)
         .reset_index(drop=True)
     )
+
+
+def selected_prediction_metrics(
+    predictions: pd.DataFrame,
+    model_name: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Calculate metrics for the stitched selected validation predictions."""
+
+    selected_rows = []
+    for fold, fold_predictions in predictions.groupby("fold", dropna=False):
+        y_true = fold_predictions["y_true"]
+        y_pred = fold_predictions["y_pred"]
+        metric_values = calculate_metrics(y_true, y_pred)
+        timestamp = pd.to_datetime(fold_predictions[constants.TIMESTAMP_COLUMN], utc=True)
+        selected_rows.append(
+            {
+                "model": model_name,
+                "params": SELECTED_PER_HOUR_PARAMS,
+                "split": "selected_validation",
+                "fold": fold,
+                "train_begin": pd.NaT,
+                "train_end": pd.NaT,
+                "test_begin": timestamp.min(),
+                "test_end": timestamp.max() + pd.Timedelta(hours=1),
+                "n_test_rows": len(fold_predictions),
+                "n_predicted_rows": int(y_pred.notna().sum()),
+                "prediction_coverage": float(y_pred.notna().mean()),
+                **metric_values,
+            }
+        )
+
+    fold_metrics = pd.DataFrame(selected_rows)
+    summary_metrics = calculate_metrics(predictions["y_true"], predictions["y_pred"])
+    summary = pd.DataFrame(
+        [
+            {
+                "model": model_name,
+                "params": SELECTED_PER_HOUR_PARAMS,
+                **summary_metrics,
+            }
+        ]
+    )
+    return fold_metrics, summary
 
 
 def read_first_metric(path: Path, metric_name: str) -> float | None:
@@ -232,17 +227,14 @@ def add_relative_mae_vs_baseline(
 
 def baseline_summary_path(
     output_base_folder: Path,
-    target_option: str,
-    feature_mode: str,
+    forecast_setup: str,
     period_days: int,
     block: str,
 ) -> Path:
     """Return expected baseline validation-summary path."""
 
-    name_parts = ["baseline_week_lag", target_option]
-    if target_option == "hourly":
-        name_parts.append(feature_mode)
-    else:
+    name_parts = ["baseline_model", forecast_setup]
+    if forecast_setup in {"hourly_period", "period_average"}:
         name_parts.append(f"{period_days}d_{block}")
     baseline_folder = output_base_folder / "__".join(name_parts)
     return baseline_folder / "validation_summary.csv"
@@ -358,8 +350,8 @@ def save_final_model_artifacts(
     saved_window: TimeWindow,
     saved_predictions: pd.DataFrame,
     validation_summary: pd.DataFrame,
-    target_option: str,
-    feature_mode: str,
+    forecast_setup: str,
+    feature_policy: str,
     period_days: int,
     block: str,
 ) -> tuple[Path, Path, Path]:
@@ -379,6 +371,12 @@ def save_final_model_artifacts(
     model_path = output_folder / "model.joblib"
     predictions_path = output_folder / "predictions.csv"
     metadata_path = output_folder / "metadata.json"
+    metadata_best_params = {
+        key: value
+        for key, value in best_params.items()
+        if key != "params_by_hour"
+    }
+    model_feature_columns = list(getattr(saved_result.model_state, "feature_columns", feature_columns))
 
     joblib.dump(saved_result.model_state, model_path)
     write_predictions_csv(saved_predictions, predictions_path)
@@ -386,13 +384,13 @@ def save_final_model_artifacts(
         {
             "model": model_module.MODEL_NAME,
             "model_options": model_options,
-            "best_params": best_params,
+            "best_params": metadata_best_params,
             "feature_csv": str(feature_path),
-            "target_option": target_option,
-            "feature_mode": feature_mode,
+            "forecast_setup": forecast_setup,
+            "feature_policy": feature_policy,
             "period_days": period_days,
             "block": block,
-            "feature_columns": feature_columns,
+            "feature_columns": model_feature_columns,
             "target_column": target_column,
             "validation_method": "rolling fixed-window validation",
             "selection_metric": constants.MODEL_SELECTION_METRICS[0],
@@ -427,9 +425,7 @@ def save_final_model_artifacts(
 def main() -> None:
     """Run rolling validation and write compact result artifacts."""
 
-    args = parse_command_line_arguments()
-    if args.interactive:
-        args = apply_interactive_settings(args)
+    args = apply_interactive_settings(parse_command_line_arguments())
     feature_path = Path(args.features)
     output_base_folder = (
         Path(args.output_folder) if args.output_folder else default_models_base_folder(feature_path)
@@ -439,11 +435,9 @@ def main() -> None:
     grid_options = build_grid_options(model_options, args)
     output_name_parts = [
         model_run_name(model_module, model_options),
-        args.target_option,
+        args.forecast_setup,
     ]
-    if args.target_option == "hourly":
-        output_name_parts.append(args.feature_mode)
-    else:
+    if args.forecast_setup in {"hourly_period", "period_average"}:
         output_name_parts.append(f"{args.period_days}d_{args.block}")
     output_folder = output_base_folder / "__".join(output_name_parts)
     output_folder.mkdir(parents=True, exist_ok=True)
@@ -453,46 +447,30 @@ def main() -> None:
     modelling_dataset = build_modelling_dataset(
         feature_table=feature_table,
         model_name=model_module.MODEL_NAME,
-        target_option=args.target_option,
-        feature_mode=args.feature_mode,
+        forecast_setup=args.forecast_setup,
         period_days=args.period_days,
         block=args.block,
     )
     table = modelling_dataset.table
+    feature_columns = modelling_dataset.feature_columns
     validation_result = run_rolling_validation(
         table,
         model_module,
         model_options=grid_options,
         show_progress=True,
-        feature_columns=modelling_dataset.feature_columns,
+        feature_columns=feature_columns,
         target_column=modelling_dataset.target_column,
     )
-    validation_summary = summarize_validation(validation_result.metrics)
-    baseline_path = baseline_summary_path(
-        output_base_folder,
-        args.target_option,
-        modelling_dataset.feature_mode,
-        args.period_days,
-        args.block,
-    )
-    if model_module.MODEL_NAME != "baseline_week_lag":
-        validation_summary = add_relative_mae_vs_baseline(
-            validation_summary,
-            read_first_metric(baseline_path, "mae"),
-        )
-
     validation_summary_path = output_folder / "validation_summary.csv"
     validation_metrics_path = output_folder / "validation_metrics.csv"
 
-    write_result_csv(validation_summary, validation_summary_path)
-    write_result_csv(validation_result.metrics, validation_metrics_path)
-
     validation_windows = build_validation_windows(table)
     last_validation_window = validation_windows[-1]
-    best_params_string = json.dumps(validation_result.best_params, sort_keys=True)
-    saved_predictions = validation_result.predictions.loc[
-        validation_result.predictions["params"] == best_params_string
-    ].copy()
+    saved_predictions = select_predictions_for_params(
+        model_module,
+        validation_result.predictions,
+        validation_result.best_params,
+    )
     if saved_predictions.empty:
         saved_predictions = train_predict_window(
             table=table,
@@ -501,9 +479,40 @@ def main() -> None:
             window=last_validation_window,
             split_name="last_validation_fold",
             fold_number=1,
-            feature_columns=modelling_dataset.feature_columns,
+            feature_columns=feature_columns,
             target_column=modelling_dataset.target_column,
         ).predictions
+
+    validation_metrics = validation_result.metrics.copy()
+    validation_summary = summarize_validation(validation_result.metrics)
+    if "params_by_hour" in validation_result.best_params:
+        selected_fold_metrics, selected_summary = selected_prediction_metrics(
+            saved_predictions,
+            model_module.MODEL_NAME,
+        )
+        validation_metrics = pd.concat(
+            [selected_fold_metrics, validation_metrics],
+            ignore_index=True,
+        )
+        validation_summary = pd.concat(
+            [selected_summary, validation_summary],
+            ignore_index=True,
+        )
+
+    baseline_path = baseline_summary_path(
+        output_base_folder,
+        modelling_dataset.forecast_setup,
+        args.period_days,
+        args.block,
+    )
+    if model_module.MODEL_NAME != "baseline_model":
+        validation_summary = add_relative_mae_vs_baseline(
+            validation_summary,
+            read_first_metric(baseline_path, "mae"),
+        )
+
+    write_result_csv(validation_summary, validation_summary_path)
+    write_result_csv(validation_metrics, validation_metrics_path)
 
     band_offsets = residual_quantiles_by_hour(saved_predictions)
     saved_predictions = add_prediction_bands(saved_predictions, band_offsets)
@@ -516,21 +525,21 @@ def main() -> None:
         model_module,
         model_options,
         validation_result.best_params,
-        modelling_dataset.feature_columns,
+        feature_columns,
         modelling_dataset.target_column,
         last_validation_window,
         saved_predictions,
         validation_summary,
-        args.target_option,
-        modelling_dataset.feature_mode,
+        modelling_dataset.forecast_setup,
+        modelling_dataset.feature_policy,
         args.period_days,
         args.block,
     )
 
     print(f"Model: {model_module.MODEL_NAME}")
-    print(f"Target: {args.target_option}")
-    print(f"Feature mode: {modelling_dataset.feature_mode}")
-    print(f"Selected features: {len(modelling_dataset.feature_columns)}")
+    print(f"Forecast setup: {modelling_dataset.forecast_setup}")
+    print(f"Feature policy: {modelling_dataset.feature_policy}")
+    print(f"Selected features: {len(feature_columns)}")
     print(f"Best params from rolling validation: {validation_result.best_params}")
     print(
         f"Forecast band P{int(constants.BAND_LOWER_QUANTILE * 100)}-"

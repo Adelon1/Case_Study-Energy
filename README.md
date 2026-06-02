@@ -15,7 +15,7 @@ forecast of future realised prices.
 The same code also supports a second target on request — a **period-average forecast**,
 where a single value is predicted for a whole delivery period of length `|P|` days
 (e.g. a month-ahead baseload or peakload average) instead of 24 hourly values. The two
-targets are selected with `--target hourly` (default) or `--target period_average`.
+targets are selected inside the interactive validation prompt.
 
 > **Documentation**
 > - [`TASK.md`](TASK.md) — the original case-study brief.
@@ -26,7 +26,7 @@ targets are selected with `--target hourly` (default) or `--target period_averag
 - ENTSO-E ingestion with 01_raw → 02_interim → 03_processed data layout and a generated QA report.
 - Correct UTC/DST handling (UTC join key, local German calendar features, 24-column daily lags across 23/25-hour days).
 - Leakage-safe feature engineering with previous UTC daily price curves and local German calendar features.
-- Three models behind one interface: seasonal-lag baseline, **LEAR-style 24-hour regularised ARX** (headline), and a histogram gradient-boosting benchmark.
+- Five models behind one interface: seasonal-lag baseline, **LEAR-style 24-hour regularised ARX** (headline), histogram gradient boosting, Theil-Sen, and RANSAC-LASSO robust linear checks.
 - Rolling-origin validation (24m train / 1m test / 1m step, 35 folds) with MAE, RMSE, bias, and tail/scarcity metrics.
 - Empirical **P10–P90 residual bands** per hour (validation coverage ≈ 80%).
 - Band-driven curve signal with benchmark comparison, desk action, and invalidation rules.
@@ -53,44 +53,28 @@ Environment variables (loaded from `.env`, never committed):
 
 ```bash
 # 1. Build the dataset (download, parse, combine, QA, features)
-.venv/bin/python pipeline_steps/01_build_dataset.py \
-  --datasets day_ahead_prices load_forecast solar_forecast wind_onshore_forecast wind_offshore_forecast \
-  --start 01-01-2021 --end 02-01-2026 --mode modelling
+.venv/bin/python pipeline_steps/01_build_dataset.py
 
 # 2. Validate the baseline
-.venv/bin/python pipeline_steps/02_validate_model.py \
-  --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
-  --model baseline_week_lag
+.venv/bin/python pipeline_steps/02_validate_model.py
 
 # 3. Validate the headline LEAR model
-.venv/bin/python pipeline_steps/02_validate_model.py \
-  --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
-  --model lear_model --regularization lasso --target-transform raw \
-  --target hourly --feature-mode day_ahead_full
+.venv/bin/python pipeline_steps/02_validate_model.py
 
 # 4. Generate validation figures
-.venv/bin/python pipeline_steps/03_plot_validation.py \
-  --run-folder models/germany_modelling_2021_2026/lear_model_lasso_raw__hourly__day_ahead_full
+.venv/bin/python pipeline_steps/03_plot_validation.py
 
 # 5. Translate a period into curve views
-.venv/bin/python pipeline_steps/05_translate_curve_view.py \
-  --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
-  --start 01-11-2025 --end 01-12-2025 \
-  --model lear_model --regularization lasso --target-transform raw \
-  --target hourly --feature-mode period_hourly_safe --block all --benchmark trailing_average
+.venv/bin/python pipeline_steps/05_translate_curve_view.py
 
 # 6. (optional) AI commentary for one curve view
-.venv/bin/python pipeline_steps/06_generate_ai_commentary.py \
-  --summary outputs/03_curve_translation/germany_modelling_2021_2026/<run>/20251101_20251201/baseload/curve_view_summary.csv
+.venv/bin/python pipeline_steps/06_generate_ai_commentary.py
 ```
 
 Forecast a single delivery day as a 24-hour vector:
 
 ```bash
-.venv/bin/python pipeline_steps/04_predict_day_ahead.py \
-  --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
-  --delivery-day 01-12-2025 \
-  --model lear_model --regularization lasso --target-transform raw
+.venv/bin/python pipeline_steps/04_predict_day_ahead.py
 ```
 
 ## Repository layout

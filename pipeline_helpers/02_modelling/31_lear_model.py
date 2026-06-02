@@ -1,20 +1,19 @@
 """LEAR-style regularised linear model.
 
 LEAR fits one regularised linear regression per delivery hour. Every hour shares
-the same leakage-safe feature set but learns its own coefficients and its own
-regularisation strength: each hour selects its penalty by time-series
-cross-validation, so volatile peak hours and calm night hours are tuned
-independently instead of sharing one global alpha.
+the same leakage-safe feature set but learns its own coefficients. The
+regularisation grid is evaluated by the outer rolling validation, and this
+module selects the best validated setting separately per hour.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib
+import json
 
 import pandas as pd
-from sklearn.linear_model import ElasticNetCV, LassoCV, RidgeCV
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.linear_model import ElasticNet, Lasso, Ridge
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -36,6 +35,7 @@ class LearModelState:
     feature_columns: list[str]
     target_transform: str
     alpha_by_hour: dict[int, float]
+    params_by_hour: dict[int, dict[str, object]]
     fitted_hours: list[int]
     n_train_rows_by_hour: dict[int, int]
 
@@ -63,8 +63,10 @@ def train(train_data: pd.DataFrame, params: dict[str, object]) -> LearModelState
 
     hourly_models: dict[int, Pipeline] = {}
     alpha_by_hour: dict[int, float] = {}
+    params_by_hour: dict[int, dict[str, object]] = {}
     n_train_rows_by_hour: dict[int, int] = {}
     for hour in range(24):
+        hour_params = params_for_hour(params, hour)
         rows = train_data.loc[train_data[HOUR_COLUMN] == hour].dropna(
             subset=[target_column, *feature_columns]
         )
@@ -72,13 +74,14 @@ def train(train_data: pd.DataFrame, params: dict[str, object]) -> LearModelState
         if rows.empty:
             raise ValueError(f"LEAR has no complete training rows for hour {hour}.")
 
-        model = _build_pipeline(params)
+        model = _build_pipeline(hour_params)
         model.fit(
             rows[feature_columns],
             model_support.transform_target(rows[target_column], target_transform),
         )
         hourly_models[hour] = model
-        alpha_by_hour[hour] = float(model.named_steps["regressor"].alpha_)
+        alpha_by_hour[hour] = float(hour_params["alpha"])
+        params_by_hour[hour] = public_model_params(hour_params)
 
     return LearModelState(
         hourly_models=hourly_models,
@@ -86,6 +89,7 @@ def train(train_data: pd.DataFrame, params: dict[str, object]) -> LearModelState
         feature_columns=feature_columns,
         target_transform=target_transform,
         alpha_by_hour=alpha_by_hour,
+        params_by_hour=params_by_hour,
         fitted_hours=sorted(hourly_models),
         n_train_rows_by_hour=n_train_rows_by_hour,
     )
@@ -122,10 +126,94 @@ def build_param_grid(
     target_transform: str = "raw",
     **_unused_options,
 ) -> list[dict[str, object]]:
-    """Return one configuration per family; alpha is tuned per hour in ``train``."""
+    """Return fixed-penalty configurations for outer rolling validation."""
 
     validate_model_choices(regularization, target_transform)
-    return [{"regularization": regularization, "target_transform": target_transform}]
+    if regularization == "ridge":
+        return [
+            {
+                "regularization": regularization,
+                "target_transform": target_transform,
+                "alpha": alpha,
+            }
+            for alpha in constants.RIDGE_ALPHA_GRID
+        ]
+    if regularization == "elasticnet":
+        return [
+            {
+                "regularization": regularization,
+                "target_transform": target_transform,
+                "alpha": alpha,
+                "l1_ratio": l1_ratio,
+            }
+            for alpha in constants.LEAR_ALPHA_GRID
+            for l1_ratio in constants.LEAR_L1_RATIO_GRID
+        ]
+    return [
+        {
+            "regularization": regularization,
+            "target_transform": target_transform,
+            "alpha": alpha,
+        }
+        for alpha in constants.LEAR_ALPHA_GRID
+    ]
+
+
+def choose_best_params(metrics: pd.DataFrame, predictions: pd.DataFrame) -> dict[str, object]:
+    """Choose the best validated LEAR setting, separately by hour when possible."""
+
+    if HOUR_COLUMN not in predictions.columns:
+        average_metrics = metrics.groupby("params", as_index=False)["mae"].mean()
+        return json.loads(average_metrics.sort_values("mae").iloc[0]["params"])
+
+    params_by_hour: dict[int, dict[str, object]] = {}
+    for hour, hour_predictions in predictions.dropna(subset=["y_pred"]).groupby(HOUR_COLUMN):
+        scored = (
+            hour_predictions.assign(abs_error=lambda frame: (frame["y_pred"] - frame["y_true"]).abs())
+            .groupby("params", as_index=False)["abs_error"]
+            .mean()
+            .sort_values("abs_error")
+        )
+        if scored.empty:
+            continue
+        params_by_hour[int(hour)] = json.loads(scored.iloc[0]["params"])
+
+    if sorted(params_by_hour) != list(range(24)):
+        missing = sorted(set(range(24)) - set(params_by_hour))
+        raise ValueError(f"LEAR could not choose validated params for hours: {missing}")
+
+    first_params = next(iter(params_by_hour.values()))
+    return {
+        "regularization": first_params["regularization"],
+        "target_transform": first_params["target_transform"],
+        "params_by_hour": {str(hour): params for hour, params in params_by_hour.items()},
+    }
+
+
+def select_validation_predictions(
+    predictions: pd.DataFrame,
+    best_params: dict[str, object],
+) -> pd.DataFrame:
+    """Return rows predicted with each hour's selected validation setting."""
+
+    params_by_hour = best_params.get("params_by_hour")
+    if not params_by_hour or HOUR_COLUMN not in predictions.columns:
+        return predictions.loc[predictions["params"] == params_to_string(best_params)].copy()
+
+    selected_parts = []
+    for hour_text, hour_params in params_by_hour.items():
+        hour = int(hour_text)
+        selected_parts.append(
+            predictions.loc[
+                (predictions[HOUR_COLUMN] == hour)
+                & (predictions["params"] == params_to_string(hour_params))
+            ]
+        )
+    if not selected_parts:
+        return pd.DataFrame(columns=predictions.columns)
+    return pd.concat(selected_parts, ignore_index=True).sort_values(
+        ["fold", HOUR_COLUMN, "timestamp_utc"],
+    )
 
 
 def output_folder_name(
@@ -174,7 +262,8 @@ def _train_pooled(
         pooled_model=model,
         feature_columns=feature_columns,
         target_transform=target_transform,
-        alpha_by_hour={-1: float(model.named_steps["regressor"].alpha_)},
+        alpha_by_hour={-1: float(params.get("alpha", 1.0))},
+        params_by_hour={-1: public_model_params(params)},
         fitted_hours=[],
         n_train_rows_by_hour={-1: len(rows)},
     )
@@ -201,41 +290,67 @@ def _predict_into(
 
 
 def _build_pipeline(params: dict[str, object]) -> Pipeline:
-    """Standard-scale features, then fit a cross-validated linear regressor."""
+    """Standard-scale features, then fit a fixed-penalty linear regressor."""
 
     return Pipeline(
         [
             ("scaler", StandardScaler()),
-            ("regressor", _build_cross_validated_regressor(params)),
+            ("regressor", _build_regressor(params)),
         ]
     )
 
 
-def _build_cross_validated_regressor(params: dict[str, object]):
-    """Create the per-hour regressor that selects its own alpha by time-series CV."""
+def _build_regressor(params: dict[str, object]):
+    """Create the fixed-penalty regressor selected by rolling validation."""
 
     regularization = str(params.get("regularization", "lasso"))
-    splitter = TimeSeriesSplit(n_splits=constants.LEAR_CV_SPLITS)
+    alpha = float(params.get("alpha", 1.0))
 
     if regularization == "lasso":
-        return LassoCV(
-            alphas=constants.LEAR_ALPHA_PATH_LENGTH,
-            cv=splitter,
+        return Lasso(
+            alpha=alpha,
             max_iter=50000,
             tol=1e-4,
             selection="random",
             random_state=0,
         )
     if regularization == "ridge":
-        return RidgeCV(alphas=constants.RIDGE_ALPHA_GRID, cv=splitter)
+        return Ridge(alpha=alpha)
     if regularization == "elasticnet":
-        return ElasticNetCV(
-            l1_ratio=constants.LEAR_L1_RATIO_GRID,
-            alphas=constants.LEAR_ALPHA_PATH_LENGTH,
-            cv=splitter,
+        return ElasticNet(
+            alpha=alpha,
+            l1_ratio=float(params.get("l1_ratio", 0.5)),
             max_iter=50000,
             tol=1e-4,
             selection="random",
             random_state=0,
         )
     raise ValueError(f"Unsupported regularization: {regularization}")
+
+
+def params_to_string(params: dict[str, object]) -> str:
+    """Serialize params the same way as validation tables."""
+
+    return json.dumps(params, sort_keys=True)
+
+
+def params_for_hour(params: dict[str, object], hour: int) -> dict[str, object]:
+    """Return this hour's selected params, or the shared grid params."""
+
+    params_by_hour = params.get("params_by_hour")
+    if isinstance(params_by_hour, dict):
+        hour_params = params_by_hour.get(str(hour), params_by_hour.get(hour))
+        if hour_params is None:
+            raise ValueError(f"LEAR missing selected params for hour {hour}.")
+        return dict(hour_params)
+    return params
+
+
+def public_model_params(params: dict[str, object]) -> dict[str, object]:
+    """Drop injected validation keys before storing model diagnostics."""
+
+    return {
+        key: value
+        for key, value in params.items()
+        if not str(key).startswith("_") and key != "params_by_hour"
+    }

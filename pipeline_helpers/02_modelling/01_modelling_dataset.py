@@ -9,7 +9,6 @@ store into a clean modelling table. Models receive only:
 from __future__ import annotations
 
 import importlib
-import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -28,11 +27,14 @@ class ModellingDataset:
     table: pd.DataFrame
     target_column: str
     feature_columns: list[str]
-    target_option: str
-    feature_mode: str
+    forecast_setup: str
+    feature_policy: str
 
 
 PERIOD_TARGET_COLUMN = "period_average_price_eur_per_mwh"
+LINEAR_MODELS = {"lear_model", "ransac_lasso_model"}
+COMPACT_MODELS = {"boosted_tree_model", "theil_sen_model"}
+BASELINE_MODEL = "baseline_model"
 
 FUNDAMENTAL_FEATURES = [
     "load_forecast_mw",
@@ -59,21 +61,32 @@ LINEAR_CALENDAR_FEATURES = [
     "local_day_of_year_cos",
 ]
 
-TREE_CALENDAR_FEATURES = [
-    "local_hour",
-    "local_weekday",
-    "local_month",
-    "local_day_of_year",
-    *LINEAR_CALENDAR_FEATURES,
-]
-
 # Monday (local_weekday_0) is dropped on purpose: with all seven dummies the set
 # is collinear with the intercept, which destabilises the linear LEAR weights.
 WEEKDAY_DUMMY_FEATURES = [f"local_weekday_{weekday}" for weekday in range(1, 7)]
 DAILY_PRICE_CURVE_LAGS = [1, 2, 3, 7]
 DAILY_PRICE_SUMMARY_LAGS = [1, 7]
-PRICE_DAILY_CURVE_PATTERN = re.compile(r"^price_d(\d+)_h\d{2}$")
-PRICE_DAILY_SUMMARY_PATTERN = re.compile(r"^price_d(\d+)_(min|max|mean)$")
+CORE_HOURLY_FUNDAMENTALS = [
+    "load_forecast_mw",
+    "solar_forecast_mw",
+    "wind_total_forecast_mw",
+]
+PERIOD_FUNDAMENTAL_COLUMNS = [
+    "load_forecast_mw",
+    "solar_forecast_mw",
+    "wind_total_forecast_mw",
+    "renewable_total_forecast_mw",
+    "residual_load_forecast_mw",
+]
+PERIOD_TARGET_LAGS = [1, 2, 4, 7, 12]
+CORE_PERIOD_FEATURES = [
+    "load_forecast_mw_mean",
+    "solar_forecast_mw_mean",
+    "wind_total_forecast_mw_mean",
+    "target_lag_1",
+    "target_lag_2",
+]
+RAW_PERIOD_CALENDAR_FEATURES = {"period_month", "period_start_weekday"}
 
 
 def existing_columns(table: pd.DataFrame, columns: list[str]) -> list[str]:
@@ -94,22 +107,21 @@ def require_columns(table: pd.DataFrame, columns: list[str]) -> list[str]:
     return columns.copy()
 
 
-def calendar_features_for_model(model_name: str) -> list[str]:
-    """Use raw calendar values for tree models and smooth values for linear models."""
-
-    if model_name == "boosted_trees":
-        return TREE_CALENDAR_FEATURES + WEEKDAY_DUMMY_FEATURES
-    return LINEAR_CALENDAR_FEATURES + WEEKDAY_DUMMY_FEATURES
-
-
-def day_ahead_price_features(table: pd.DataFrame) -> list[str]:
-    """Price features valid when forecasting one whole delivery day ahead."""
+def day_ahead_price_curve_features(table: pd.DataFrame) -> list[str]:
+    """Full previous-day UTC price curves valid for day-ahead forecasts."""
 
     columns: list[str] = []
     for day_lag in DAILY_PRICE_CURVE_LAGS:
         columns.extend(
             existing_columns(table, [f"price_d{day_lag}_h{hour:02d}" for hour in range(24)])
         )
+    return columns
+
+
+def day_ahead_price_features(table: pd.DataFrame) -> list[str]:
+    """Price curve and summary features valid for one delivery-day-ahead forecasts."""
+
+    columns = day_ahead_price_curve_features(table)
     for day_lag in DAILY_PRICE_SUMMARY_LAGS:
         columns.extend(
             existing_columns(
@@ -124,48 +136,40 @@ def day_ahead_price_features(table: pd.DataFrame) -> list[str]:
     return columns
 
 
-def safe_period_price_features(table: pd.DataFrame, period_days: int) -> list[str]:
-    """Keep only price features whose lag is at least the full forecast period."""
-
-    minimum_lag_hours = 24 * period_days
-    allowed: list[str] = []
-
-    for column in table.columns:
-        curve_match = PRICE_DAILY_CURVE_PATTERN.match(column)
-        if curve_match and int(curve_match.group(1)) * 24 >= minimum_lag_hours:
-            allowed.append(column)
-            continue
-
-        summary_match = PRICE_DAILY_SUMMARY_PATTERN.match(column)
-        if summary_match and int(summary_match.group(1)) * 24 >= minimum_lag_hours:
-            allowed.append(column)
-
-    return sorted(allowed)
-
-
 def select_hourly_features(
     table: pd.DataFrame,
     model_name: str,
-    feature_mode: str,
-    period_days: int,
-) -> list[str]:
-    """Select leakage-aware feature columns for Option A hourly rows."""
+    forecast_setup: str,
+) -> tuple[list[str], str]:
+    """Select feature columns for hourly forecast setups."""
 
-    base_columns = (
-        existing_columns(table, FUNDAMENTAL_FEATURES)
-        + require_columns(table, calendar_features_for_model(model_name))
-    )
+    if forecast_setup not in {"hourly_day_ahead", "hourly_period"}:
+        raise ValueError(f"Unsupported hourly forecast setup: {forecast_setup}")
 
-    if feature_mode == "day_ahead_full":
-        price_columns = day_ahead_price_features(table)
-    elif feature_mode == "period_hourly_safe":
-        price_columns = safe_period_price_features(table, period_days)
-    elif feature_mode == "fundamentals_calendar_only":
-        price_columns = []
-    else:
-        raise ValueError(f"Unsupported feature mode: {feature_mode}")
+    full_price_columns = day_ahead_price_features(table)
+    curve_price_columns = day_ahead_price_curve_features(table)
 
-    return list(dict.fromkeys(base_columns + price_columns))
+    if model_name == BASELINE_MODEL:
+        if forecast_setup == "hourly_day_ahead":
+            return full_price_columns, "baseline_hourly_price_lags"
+        return [], "baseline_historical_mean"
+
+    if model_name in LINEAR_MODELS:
+        base_columns = (
+            existing_columns(table, FUNDAMENTAL_FEATURES)
+            + require_columns(table, LINEAR_CALENDAR_FEATURES + WEEKDAY_DUMMY_FEATURES)
+        )
+        if forecast_setup == "hourly_day_ahead":
+            return list(dict.fromkeys(base_columns + full_price_columns)), "linear_hourly_all_safe_features"
+        return list(dict.fromkeys(base_columns)), "linear_hourly_fundamentals_calendar"
+
+    if model_name in COMPACT_MODELS:
+        base_columns = require_columns(table, CORE_HOURLY_FUNDAMENTALS)
+        if forecast_setup == "hourly_day_ahead":
+            return list(dict.fromkeys(base_columns + curve_price_columns)), "compact_hourly_core_fundamentals_price_curves"
+        return base_columns, "compact_hourly_core_fundamentals"
+
+    raise ValueError(f"Unsupported model for hourly feature selection: {model_name}")
 
 
 def add_target_lag_features(
@@ -184,21 +188,20 @@ def add_target_lag_features(
 def build_hourly_dataset(
     feature_table: pd.DataFrame,
     model_name: str,
-    feature_mode: str,
-    period_days: int,
+    forecast_setup: str,
 ) -> ModellingDataset:
     """Build hourly rows: one target value per delivery hour."""
 
     table = feature_table.copy()
     table[constants.TIMESTAMP_COLUMN] = pd.to_datetime(table[constants.TIMESTAMP_COLUMN], utc=True)
     table = table.sort_values(constants.TIMESTAMP_COLUMN).reset_index(drop=True)
-    feature_columns = select_hourly_features(table, model_name, feature_mode, period_days)
+    feature_columns, feature_policy = select_hourly_features(table, model_name, forecast_setup)
     return ModellingDataset(
         table=table,
         target_column=constants.TARGET_COLUMN,
         feature_columns=feature_columns,
-        target_option="hourly",
-        feature_mode=feature_mode,
+        forecast_setup=forecast_setup,
+        feature_policy=feature_policy,
     )
 
 
@@ -216,6 +219,7 @@ def period_block_mask(table: pd.DataFrame, block: str) -> pd.Series:
 
 def build_period_average_dataset(
     feature_table: pd.DataFrame,
+    model_name: str,
     period_days: int,
     block: str,
 ) -> ModellingDataset:
@@ -238,13 +242,7 @@ def build_period_average_dataset(
         PERIOD_TARGET_COLUMN: (constants.TARGET_COLUMN, "mean"),
         "period_n_hours": (constants.TARGET_COLUMN, "size"),
     }
-    for column in [
-        "load_forecast_mw",
-        "solar_forecast_mw",
-        "wind_total_forecast_mw",
-        "renewable_total_forecast_mw",
-        "residual_load_forecast_mw",
-    ]:
+    for column in PERIOD_FUNDAMENTAL_COLUMNS:
         if column in table.columns:
             aggregations[f"{column}_mean"] = (column, "mean")
             aggregations[f"{column}_min"] = (column, "min")
@@ -252,7 +250,7 @@ def build_period_average_dataset(
             aggregations[f"{column}_std"] = (column, "std")
 
     period_rows = table.groupby("period_start", as_index=False).agg(**aggregations)
-    period_rows = add_target_lag_features(period_rows, PERIOD_TARGET_COLUMN, [1, 2, 4, 7, 12])
+    period_rows = add_target_lag_features(period_rows, PERIOD_TARGET_COLUMN, PERIOD_TARGET_LAGS)
 
     timestamps = pd.to_datetime(period_rows[constants.TIMESTAMP_COLUMN], utc=True)
     period_rows["period_month"] = timestamps.dt.month
@@ -266,34 +264,61 @@ def build_period_average_dataset(
         2 * np.pi * period_rows["period_start_weekday"] / 7
     )
 
-    excluded = {
-        constants.TIMESTAMP_COLUMN,
-        "period_end",
-        PERIOD_TARGET_COLUMN,
-    }
-    feature_columns = [column for column in period_rows.columns if column not in excluded]
+    feature_columns, feature_policy = select_period_average_features(period_rows, model_name)
     period_rows = period_rows.dropna(subset=[PERIOD_TARGET_COLUMN]).reset_index(drop=True)
     return ModellingDataset(
         table=period_rows,
         target_column=PERIOD_TARGET_COLUMN,
         feature_columns=feature_columns,
-        target_option="period_average",
-        feature_mode="period_average_safe",
+        forecast_setup="period_average",
+        feature_policy=feature_policy,
     )
+
+
+def select_period_average_features(
+    period_rows: pd.DataFrame,
+    model_name: str,
+) -> tuple[list[str], str]:
+    """Select feature columns for direct period-average forecasts."""
+
+    if model_name == BASELINE_MODEL:
+        columns = existing_columns(period_rows, [f"target_lag_{lag}" for lag in PERIOD_TARGET_LAGS])
+        return columns, "baseline_period_target_lags" if columns else "baseline_historical_mean"
+
+    if model_name in LINEAR_MODELS:
+        excluded = {
+            "period_start",
+            constants.TIMESTAMP_COLUMN,
+            "period_end",
+            PERIOD_TARGET_COLUMN,
+            *RAW_PERIOD_CALENDAR_FEATURES,
+        }
+        columns = [
+            column
+            for column in period_rows.columns
+            if column not in excluded and pd.api.types.is_numeric_dtype(period_rows[column])
+        ]
+        return columns, "linear_period_all_numeric_without_raw_calendar"
+
+    if model_name in COMPACT_MODELS:
+        return require_columns(period_rows, CORE_PERIOD_FEATURES), "compact_period_core_fundamentals_target_lags"
+
+    raise ValueError(f"Unsupported model for period-average feature selection: {model_name}")
 
 
 def build_modelling_dataset(
     feature_table: pd.DataFrame,
     model_name: str,
-    target_option: str,
-    feature_mode: str,
-    period_days: int,
-    block: str,
+    period_days: int = 1,
+    block: str = "baseload",
+    forecast_setup: str = "hourly_day_ahead",
 ) -> ModellingDataset:
     """Build the table consumed by validation and model training."""
 
-    if target_option == "hourly":
-        return build_hourly_dataset(feature_table, model_name, feature_mode, period_days)
-    if target_option == "period_average":
-        return build_period_average_dataset(feature_table, period_days, block)
-    raise ValueError(f"Unsupported target option: {target_option}")
+    if forecast_setup not in constants.FORECAST_SETUPS:
+        raise ValueError(f"Unsupported forecast setup: {forecast_setup}")
+    if forecast_setup in {"hourly_day_ahead", "hourly_period"}:
+        return build_hourly_dataset(feature_table, model_name, forecast_setup)
+    if forecast_setup == "period_average":
+        return build_period_average_dataset(feature_table, model_name, period_days, block)
+    raise ValueError(f"Unsupported forecast setup: {forecast_setup}")

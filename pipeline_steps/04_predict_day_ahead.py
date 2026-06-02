@@ -5,20 +5,15 @@ the day-ahead forecast object explicit: one command returns the full delivery
 day, not one hour at a time.
 
 Example:
-    .venv/bin/python pipeline_steps/04_predict_day_ahead.py \
-      --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
-      --delivery-day 01-12-2025 \
-      --model lear_model \
-      --regularization lasso \
-      --target-transform raw
+    .venv/bin/python pipeline_steps/04_predict_day_ahead.py
 """
 
 from __future__ import annotations
 
-import argparse
 import importlib
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -37,29 +32,18 @@ parse_utc_period = forecast_blocks.parse_utc_period
 DEFAULT_FEATURES = "data/03_processed/germany_modelling_2021_2026/germany_model_features.csv"
 
 
-def parse_command_line_arguments() -> argparse.Namespace:
-    """Read day-ahead prediction settings."""
+def parse_command_line_arguments() -> SimpleNamespace:
+    """Return default settings; the user edits them through prompts."""
 
-    parser = argparse.ArgumentParser(description="Predict one day-ahead 24-hour vector.")
-    parser.add_argument("--interactive", action="store_true", help="Ask for settings interactively.")
-    parser.add_argument("--features", default=DEFAULT_FEATURES, help="Path to feature CSV.")
-    parser.add_argument("--delivery-day", default=None, help="Delivery day, DD-MM-YYYY.")
-    parser.add_argument("--model", default="lear_model", help="Model module name.")
-    parser.add_argument(
-        "--regularization",
-        choices=["lasso", "elasticnet", "ridge"],
-        default=None,
-        help="Regularization for models that support it.",
+    return SimpleNamespace(
+        features=DEFAULT_FEATURES,
+        delivery_day=None,
+        model="lear_model",
+        regularization=None,
+        target_transform=None,
+        output_base_folder=None,
+        force_retrain=False,
     )
-    parser.add_argument(
-        "--target-transform",
-        choices=["raw", "asinh"],
-        default=None,
-        help="Target transform for models that support it.",
-    )
-    parser.add_argument("--output-base-folder", default=None, help="Base model output folder.")
-    parser.add_argument("--force-retrain", action="store_true", help="Retrain even if predictions exist.")
-    return parser.parse_args()
 
 
 def ask(prompt: str, default: str | None = None) -> str:
@@ -81,7 +65,7 @@ def ask_choice(prompt: str, choices: list[str], default: str) -> str:
         print(f"Please choose one of: {choices_text}")
 
 
-def apply_interactive_settings(args: argparse.Namespace) -> argparse.Namespace:
+def apply_interactive_settings(args: SimpleNamespace) -> SimpleNamespace:
     """Fill missing values interactively."""
 
     args.features = ask("Feature CSV", args.features)
@@ -113,11 +97,9 @@ def parse_delivery_day(day_text: str) -> tuple[str, str]:
 def main() -> None:
     """Create or reuse a full-day hourly forecast."""
 
-    args = parse_command_line_arguments()
-    if args.interactive:
-        args = apply_interactive_settings(args)
+    args = apply_interactive_settings(parse_command_line_arguments())
     if not args.delivery_day:
-        raise ValueError("--delivery-day is required unless provided interactively.")
+        raise ValueError("Delivery day is required.")
 
     start, end = parse_delivery_day(args.delivery_day)
     period = parse_utc_period(start, end)
@@ -129,8 +111,7 @@ def main() -> None:
         period=period,
         output_base_folder=args.output_base_folder,
         force_retrain=args.force_retrain,
-        target_option="hourly",
-        feature_mode="day_ahead_full",
+        forecast_setup="hourly_day_ahead",
         period_days=1,
         block="baseload",
     )

@@ -150,10 +150,14 @@ def params_to_string(params: dict[str, object]) -> str:
 def get_model_param_grid(
     model_module: ModuleType,
     model_options: dict[str, object] | None = None,
+    feature_columns: list[str] | None = None,
 ) -> list[dict[str, object]]:
     """Return the parameter grid declared by a model module."""
 
-    return model_module.build_param_grid(**(model_options or {}))
+    return model_module.build_param_grid(
+        **(model_options or {}),
+        feature_columns=feature_columns,
+    )
 
 
 def average_metrics_by_params(metrics: pd.DataFrame) -> pd.DataFrame:
@@ -184,6 +188,30 @@ def choose_best_params(metrics: pd.DataFrame) -> dict[str, object]:
     ]
     best_params_string = average_metrics.sort_values(sort_columns).iloc[0]["params"]
     return json.loads(best_params_string)
+
+
+def choose_best_params_for_model(
+    model_module: ModuleType,
+    metrics: pd.DataFrame,
+    predictions: pd.DataFrame,
+) -> dict[str, object]:
+    """Let a model customize parameter selection without hardcoding model names."""
+
+    if hasattr(model_module, "choose_best_params"):
+        return model_module.choose_best_params(metrics, predictions)
+    return choose_best_params(metrics)
+
+
+def select_predictions_for_params(
+    model_module: ModuleType,
+    predictions: pd.DataFrame,
+    best_params: dict[str, object],
+) -> pd.DataFrame:
+    """Return validation predictions corresponding to the selected parameters."""
+
+    if hasattr(model_module, "select_validation_predictions"):
+        return model_module.select_validation_predictions(predictions, best_params)
+    return predictions.loc[predictions["params"] == params_to_string(best_params)].copy()
 
 
 def evaluate_model_on_window(
@@ -298,7 +326,11 @@ def run_rolling_validation(
     """Tune a model module over its parameter grid using rolling validation."""
 
     windows = build_validation_windows(table, train_months, test_months, step_months)
-    param_grid = get_model_param_grid(model_module, model_options)
+    param_grid = get_model_param_grid(
+        model_module,
+        model_options,
+        feature_columns=feature_columns,
+    )
     metric_rows: list[dict[str, object]] = []
     prediction_tables: list[pd.DataFrame] = []
 
@@ -320,7 +352,7 @@ def run_rolling_validation(
             prediction_tables.append(predictions)
 
     metrics = pd.DataFrame(metric_rows)
-    best_params = choose_best_params(metrics)
     predictions = pd.concat(prediction_tables, ignore_index=True)
+    best_params = choose_best_params_for_model(model_module, metrics, predictions)
 
     return ValidationResult(metrics=metrics, predictions=predictions, best_params=best_params)

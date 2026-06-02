@@ -18,7 +18,7 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 model_support = importlib.import_module("pipeline_helpers.02_modelling.05_model_support")
 
 
-MODEL_NAME = "boosted_trees"
+MODEL_NAME = "boosted_tree_model"
 
 # Calendar columns that are categories, not magnitudes. Passing them as
 # categoricals lets the trees split on individual hours, weekdays, and months.
@@ -87,7 +87,7 @@ def build_param_grid(**_unused_options) -> list[dict[str, object]]:
         {
             "loss": "absolute_error",
             "learning_rate": 0.05,
-            "max_iter": 700,
+            "max_iter": 200,
             "max_leaf_nodes": 31,
             "min_samples_leaf": 50,
             "l2_regularization": 0.0,
@@ -95,7 +95,7 @@ def build_param_grid(**_unused_options) -> list[dict[str, object]]:
         {
             "loss": "absolute_error",
             "learning_rate": 0.03,
-            "max_iter": 1000,
+            "max_iter": 200,
             "max_leaf_nodes": 63,
             "min_samples_leaf": 100,
             "l2_regularization": 0.0,
@@ -103,7 +103,7 @@ def build_param_grid(**_unused_options) -> list[dict[str, object]]:
         {
             "loss": "absolute_error",
             "learning_rate": 0.05,
-            "max_iter": 700,
+            "max_iter": 200,
             "max_leaf_nodes": 63,
             "min_samples_leaf": 50,
             "l2_regularization": 1.0,
@@ -111,7 +111,7 @@ def build_param_grid(**_unused_options) -> list[dict[str, object]]:
         {
             "loss": "squared_error",
             "learning_rate": 0.05,
-            "max_iter": 700,
+            "max_iter": 200,
             "max_leaf_nodes": 31,
             "min_samples_leaf": 50,
             "l2_regularization": 0.0,

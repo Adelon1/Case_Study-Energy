@@ -1,8 +1,7 @@
 """Pipeline step: generate logged AI commentary for a curve-view summary.
 
 Example:
-    .venv/bin/python pipeline_steps/06_generate_ai_commentary.py \
-      --summary data/03_processed/germany_modelling_2021_2026/lear_model_lasso_raw/03_curve_translation/20251101_20251201/baseload/curve_view_summary.csv
+    .venv/bin/python pipeline_steps/06_generate_ai_commentary.py
 
 The script calls an OpenAI model using ``OPENAI_API_KEY`` from ``.env`` or the
 process environment. It logs the prompt, output, and failures next to the
@@ -11,12 +10,12 @@ generated commentary.
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import requests
@@ -35,18 +34,25 @@ class OpenAIRequestError(RuntimeError):
     """Raised when the OpenAI API returns a non-success response."""
 
 
-def parse_command_line_arguments() -> argparse.Namespace:
-    """Read commentary generation settings from the command line."""
+def parse_command_line_arguments() -> SimpleNamespace:
+    """Ask for commentary generation settings."""
 
-    parser = argparse.ArgumentParser(description="Generate AI commentary for a curve view.")
-    parser.add_argument("--summary", required=True, help="Path to curve_view_summary.csv.")
-    parser.add_argument("--env", default=".env", help="Path to local .env file.")
-    parser.add_argument(
-        "--output-folder",
-        default=None,
-        help="Where to write commentary and logs. Defaults next to the summary CSV.",
+    summary = ask("Curve-view summary CSV", "")
+    env = ask("Env file", ".env")
+    output_folder = ask("Output folder", "")
+    return SimpleNamespace(
+        summary=summary,
+        env=env,
+        output_folder=output_folder or None,
     )
-    return parser.parse_args()
+
+
+def ask(prompt: str, default: str | None = None) -> str:
+    """Ask one terminal question."""
+
+    suffix = f" [{default}]" if default is not None else ""
+    value = input(f"{prompt}{suffix}: ").strip()
+    return value or (default or "")
 
 
 def utc_timestamp_slug() -> str:
@@ -170,14 +176,19 @@ LLM failure reason: `{failure_reason}`
 """
 
 
-def main() -> None:
-    """Generate commentary and required logs."""
+def generate_commentary(
+    summary_path: str | Path,
+    env_path: str | Path = ".env",
+    output_folder: str | Path | None = None,
+) -> Path:
+    """Generate commentary and required logs for one curve-view summary."""
 
-    args = parse_command_line_arguments()
-    load_dotenv(args.env)
+    load_dotenv(env_path)
 
-    summary_path = Path(args.summary)
-    output_folder = Path(args.output_folder) if args.output_folder else summary_path.parent
+    summary_path = Path(summary_path)
+    if not str(summary_path):
+        raise ValueError("Curve-view summary CSV is required.")
+    output_folder = Path(output_folder) if output_folder else summary_path.parent
     logs_folder = output_folder / "ai_logs"
     logs_folder.mkdir(parents=True, exist_ok=True)
     timestamp = utc_timestamp_slug()
@@ -223,7 +234,7 @@ def main() -> None:
         )
         print(f"Fallback commentary saved: {commentary_path}")
         print(f"Failure log saved: {failure_log_path}")
-        return
+        return commentary_path
 
     try:
         response_json = call_openai_responses_api(prompt, api_key, model)
@@ -257,11 +268,21 @@ def main() -> None:
         )
         print(f"Fallback commentary saved: {commentary_path}")
         print(f"Failure log saved: {failure_log_path}")
-        return
+        return commentary_path
 
     print(f"AI commentary saved: {commentary_path}")
     print(f"Prompt log saved: {prompt_log_path}")
     print(f"Output log saved: {output_log_path}")
+    return commentary_path
+
+
+def main() -> None:
+    """Generate commentary and required logs."""
+
+    args = parse_command_line_arguments()
+    if not args.summary:
+        raise ValueError("Curve-view summary CSV is required.")
+    generate_commentary(args.summary, args.env, args.output_folder)
 
 
 if __name__ == "__main__":

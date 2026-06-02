@@ -11,16 +11,15 @@ forecast) and writes three figures that together tell the accuracy story:
                                and realised coverage.
 
 Example:
-    .venv/bin/python pipeline_steps/03_plot_validation.py \
-      --run-folder models/germany_modelling_2021_2026/lear_model_lasso_raw__hourly__day_ahead_full
+    .venv/bin/python pipeline_steps/03_plot_validation.py
 """
 
 from __future__ import annotations
 
-import argparse
 import importlib
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import matplotlib
 
@@ -37,27 +36,28 @@ constants = importlib.import_module("pipeline_helpers.02_modelling.00_constants"
 TIMESTAMP_COLUMN = constants.TIMESTAMP_COLUMN
 
 
-def parse_command_line_arguments() -> argparse.Namespace:
-    """Read plotting settings from the command line."""
+def parse_command_line_arguments() -> SimpleNamespace:
+    """Ask for plotting settings."""
 
-    parser = argparse.ArgumentParser(description="Plot rolling-validation results.")
-    parser.add_argument(
-        "--run-folder",
-        required=True,
-        help="Model run folder containing predictions.csv.",
+    run_folder = ask(
+        "Model run folder",
+        "models/germany_modelling_2021_2026/lear_model_lasso_raw__hourly_day_ahead",
     )
-    parser.add_argument(
-        "--output-folder",
-        default=None,
-        help="Where to write figures. Defaults to outputs/figures/<run-name>.",
+    output_folder = ask("Output folder", "")
+    days = int(ask("Recent days to plot", "7"))
+    return SimpleNamespace(
+        run_folder=run_folder,
+        output_folder=output_folder or None,
+        days=days,
     )
-    parser.add_argument(
-        "--days",
-        type=int,
-        default=7,
-        help="How many recent days to show in the forecast-vs-actual chart.",
-    )
-    return parser.parse_args()
+
+
+def ask(prompt: str, default: str | None = None) -> str:
+    """Ask one terminal question."""
+
+    suffix = f" [{default}]" if default is not None else ""
+    value = input(f"{prompt}{suffix}: ").strip()
+    return value or (default or "")
 
 
 def load_predictions(run_folder: Path) -> pd.DataFrame:

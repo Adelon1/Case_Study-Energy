@@ -245,34 +245,36 @@ those columns a model is actually allowed to see is decided separately, in
 means the leakage rules live in exactly one place, and every model is guaranteed to
 receive the same safe column set.
 
-Two **targets** are supported:
+Three **forecast setups** are supported:
 
-- **`hourly`** (default) — one row per delivery hour, target = the hourly price. This is
-  the day-ahead forecast.
+- **`hourly_day_ahead`** — one row per delivery hour, target = hourly price, for a
+  next-day forecast. Price curves from previous UTC delivery days are allowed.
+- **`hourly_period`** — one row per delivery hour, target = hourly price, for a
+  multi-day period view. Price-history features are removed, so the period view does not
+  depend on prices from inside the period being forecast.
 - **`period_average`** — one row per delivery period of length `period_days`, target =
   the average price over that period for a chosen block (baseload / peakload / offpeak).
-  Here the table is aggregated to periods, fundamentals become per-period
-  mean/min/max/std, and the price history becomes previous-period lags.
+  Fundamentals become per-period mean/min/max/std features, and price history becomes
+  previous-period target lags.
 
-For the hourly target, a **feature mode** chooses how much price history is safe to use,
-because what counts as leakage depends on how far ahead you are forecasting:
+The feature policy is selected centrally from the forecast setup and model family:
 
-- **`day_ahead_full`** — the full price block (rolling stats + d-1/d-2/d-3/d-7 curves).
-  Correct for a one-day-ahead forecast, where everything up to d-1 is known.
-- **`period_hourly_safe`** — only price columns whose lag is at least the whole forecast
-  period (`price_dN` with `N·24h ≥ period_days·24h`). Used when hourly predictions feed a
-  multi-day period view, so the model never sees a price from inside the period it is
-  forecasting.
-- **`fundamentals_calendar_only`** — drop price history entirely; forecast from
-  fundamentals and calendar alone. The honest floor when no usable price lag exists.
+- LEAR / RANSAC-LASSO use broad linear-safe feature sets. For `hourly_day_ahead` this
+  includes previous-day price curves and price summaries; for `hourly_period` it removes
+  all price history.
+- boosted trees / Theil-Sen use compact feature sets. For `hourly_day_ahead` this is
+  load, solar, wind total, plus previous UTC daily price curves; for `hourly_period` it is
+  only load, solar, and wind total.
+- for `period_average`, LEAR / RANSAC-LASSO use numeric period features except raw
+  calendar integers, while boosted trees / Theil-Sen use load mean, solar mean, wind mean,
+  `target_lag_1`, and `target_lag_2`.
 
 The module is strict about its contract, and the errors it raises are part of the design:
 
 - `require_columns` raises *"Feature table is missing required features: …"* if the
   calendar columns a model needs are absent — a malformed feature store fails loudly
   instead of training on a silently shorter feature set.
-- an unknown feature mode raises *"Unsupported feature mode: …"*, and an unknown target
-  raises *"Unsupported target option: …"*, so a typo in a CLI flag can never fall through
+- an unknown forecast setup raises *"Unsupported forecast setup: …"*, so a typo can never fall through
   to a wrong-but-plausible run.
 - `period_average` with an unsupported block raises a clear error naming the three valid
   blocks.
@@ -301,7 +303,7 @@ so adding a model is just dropping in a new file. This uniform interface was a
 deliberate early design decision: the same engine then drives the baseline, the LEAR
 model, and the boosted trees.
 
-### 6.1 Baseline — seasonal lag (`06_baseline_week_lag.py`)
+### 6.1 Baseline — seasonal lag (`30_baseline_model.py`)
 
 The baseline predicts the target from one of its own past values, with no fitted state —
 `train()` returns `None` purely to honour the interface, and `predict()` just reads a
@@ -321,7 +323,7 @@ Its job is to be the honest denominator: an improved model that cannot beat last
 price is not worth deploying. Lago et al. explicitly warn against weak benchmarks, so a
 real seasonal naive is used rather than a trivial one.
 
-### 6.2 Headline model — LEAR-style 24-hour regularised ARX (`07_lear_model.py`)
+### 6.2 Headline model — LEAR-style 24-hour regularised ARX (`31_lear_model.py`)
 
 This is the project's main forecaster: a **LEAR-style** model, i.e. 24 separate
 regularised linear models, one per local delivery hour. It is described as
@@ -343,19 +345,20 @@ regularised linear models, one per local delivery hour. It is described as
 
 Implementation details that matter:
 
-- Each hourly model is a `Pipeline([StandardScaler, CV-regressor])`, so scaling is
-  fitted inside each fold with no leakage.
-- The regulariser self-tunes per hour: `LassoCV` / `ElasticNetCV` pick their own alpha
-  along a path of length `LEAR_ALPHA_PATH_LENGTH`, `RidgeCV` over `RIDGE_ALPHA_GRID`,
-  each via an internal `TimeSeriesSplit`. The result is genuinely **24 different alphas**
-  — the model spends regularisation where each hour needs it.
+- Each hourly model is a `Pipeline([StandardScaler, fixed-penalty regressor])`, so
+  scaling is fitted inside each fold with no leakage.
+- The outer rolling validation tests the regularisation grid directly. LEAR then
+  chooses the best validated setting separately for each delivery hour from the
+  out-of-sample validation predictions. This keeps hyperparameter selection visible in
+  the main validation tables and still gives genuinely **24 different alphas** when
+  different hours need different regularisation.
 - The fitted state records `alpha_by_hour`, `fitted_hours`, and
   `n_train_rows_by_hour`, and the model raises if any of the 24 hourly fits fail, so a
   silently half-trained model can never be scored.
 - Target transforms `raw` and `asinh` are both supported; `raw` is the default and is
   kept unless validation shows `asinh` helps.
 
-### 6.3 Nonlinear benchmark — boosted trees (`08_boosted_trees.py`)
+### 6.3 Nonlinear benchmark — boosted trees (`32_boosted_tree_model.py`)
 
 The nonlinear counterpart is a single pooled `HistGradientBoostingRegressor`. The
 motivation is that trees capture interactions (hour × residual load, weekday ×
@@ -374,6 +377,25 @@ Implementation notes: the model declares `local_hour`, `local_weekday`, and
 `local_month` as native categoricals; internal early stopping is **off** because the
 external rolling validation owns model selection; `build_param_grid` returns four
 configurations (loss × learning-rate / depth variants).
+
+### 6.4 Robust linear check — Theil-Sen (`33_theil_sen_model.py`)
+
+The Theil-Sen model is included as a robustness experiment. It is a pooled robust
+linear regression fitted on the active feature set configured in `00_constants.py`.
+This makes it easy to test the very small fundamental set
+`{load_forecast_mw, solar_forecast_mw, wind_total_forecast_mw}` against richer
+feature sets. It is not the headline model because Theil-Sen scales poorly in high
+dimension and does not perform LASSO-style feature selection.
+
+### 6.5 Robust sparse check — RANSAC-LASSO (`34_ransac_lasso_model.py`)
+
+RANSAC-LASSO is another robustness experiment. For hourly targets it also fits 24
+separate models, one per delivery hour; for period-average targets it uses one pooled
+model. It wraps `Lasso` inside `RANSACRegressor`: the model repeatedly fits sparse
+linear regressions on random training subsets, chooses an inlier set, and refits on
+that subset. This can improve normal-regime MAE when a few spikes dominate training,
+but it can also classify real scarcity or negative-price events as outliers. For that
+reason it should be judged by MAE **and** the tail metrics, not by average error alone.
 
 ---
 
@@ -466,7 +488,7 @@ uncertainty rather than to point forecasts.
 ## 10. Results, figures, and what they say
 
 The fully validated run is the headline LEAR model
-(`lear_model_lasso_raw__hourly__day_ahead_full`), LASSO, raw target, 35 folds:
+(`lear_model_lasso_raw__hourly_day_ahead`), LASSO, raw target, 35 folds:
 
 | Metric | Value (€/MWh) |
 | --- | --- |
@@ -596,8 +618,10 @@ Data helpers (`pipeline_helpers/01_entsoe_data/`): `00_constants.py`, `01_date_w
 `05_combine_dataset_csvs.py`, `06_build_features.py`.
 
 Modelling helpers (`pipeline_helpers/02_modelling/`): `00_constants.py`, `02_metrics.py`,
-`03_prediction_bands.py`, `09_validation.py`, `06_baseline_week_lag.py`, `07_lear_model.py`,
-`08_boosted_trees.py`, `10_period_prediction.py`, plus `05_model_support.py`, `04_model_io.py`,
+`03_prediction_bands.py`, `09_validation.py`, `30_baseline_model.py`, `31_lear_model.py`,
+`32_boosted_tree_model.py`, `33_theil_sen_model.py`, `34_ransac_lasso_model.py`,
+`10_period_prediction.py`, plus
+`05_model_support.py`, `04_model_io.py`,
 `01_modelling_dataset.py`.
 
 Curve-translation helpers (`pipeline_helpers/03_curve_translation/`): `00_constants.py`,
@@ -618,35 +642,22 @@ pip install -r requirements.txt
 cp .env.example .env        # fill ENTSOE_API_KEY (and optional OPENAI_API_KEY)
 
 # 1. build the dataset
-.venv/bin/python pipeline_steps/01_build_dataset.py \
-  --datasets day_ahead_prices load_forecast solar_forecast wind_onshore_forecast wind_offshore_forecast \
-  --start 01-01-2021 --end 02-01-2026 --mode modelling
+.venv/bin/python pipeline_steps/01_build_dataset.py
 
 # 2. validate the baseline
-.venv/bin/python pipeline_steps/02_validate_model.py \
-  --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
-  --model baseline_week_lag
+.venv/bin/python pipeline_steps/02_validate_model.py
 
 # 3. validate the headline LEAR model
-.venv/bin/python pipeline_steps/02_validate_model.py \
-  --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
-  --model lear_model --regularization lasso --target-transform raw \
-  --target hourly --feature-mode day_ahead_full
+.venv/bin/python pipeline_steps/02_validate_model.py
 
 # 4. figures
-.venv/bin/python pipeline_steps/03_plot_validation.py \
-  --run-folder models/germany_modelling_2021_2026/lear_model_lasso_raw__hourly__day_ahead_full
+.venv/bin/python pipeline_steps/03_plot_validation.py
 
 # 5. curve translation
-.venv/bin/python pipeline_steps/05_translate_curve_view.py \
-  --features data/03_processed/germany_modelling_2021_2026/germany_model_features.csv \
-  --start 01-11-2025 --end 01-12-2025 \
-  --model lear_model --regularization lasso --target-transform raw \
-  --target hourly --feature-mode period_hourly_safe --block all --benchmark trailing_average
+.venv/bin/python pipeline_steps/05_translate_curve_view.py
 
 # 6. AI commentary
-.venv/bin/python pipeline_steps/06_generate_ai_commentary.py \
-  --summary outputs/03_curve_translation/germany_modelling_2021_2026/<run>/20251101_20251201/baseload/curve_view_summary.csv
+.venv/bin/python pipeline_steps/06_generate_ai_commentary.py
 ```
 
 ---
