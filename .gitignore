@@ -12,7 +12,16 @@ __pycache__/
 *.log
 
 # Data downloads and generated tables are reproducible and bulky
-data/
+data/*
+!data/01_raw/
+!data/02_interim/
+!data/03_processed/
+data/01_raw/*
+data/02_interim/*
+data/03_processed/*
+!data/01_raw/.gitkeep
+!data/02_interim/.gitkeep
+!data/03_processed/.gitkeep
 
 # LaTeX build byproducts
 *.aux
