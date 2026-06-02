@@ -10,6 +10,8 @@ Public entry point:
 
 Everything above that function is configuration data used by ingestion and XML
 parsing.
+
+Read the documentation for the ENTSO-E API at "https://documenter.getpostman.com/view/7009892/2s93JtP3F6"
 """
 
 from __future__ import annotations

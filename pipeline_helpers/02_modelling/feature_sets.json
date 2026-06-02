@@ -46,7 +46,9 @@
       "solar_forecast_mw_mean",
       "wind_total_forecast_mw_mean",
       "target_lag_1",
-      "target_lag_2"
+      "target_lag_2",
+      "block_peakload",
+      "block_offpeak"
     ]
   },
   "policies": {

@@ -20,3 +20,8 @@ outputs/
 !data/01_raw/.gitkeep
 !data/02_interim/.gitkeep
 !data/03_processed/.gitkeep
+
+# latex
+*.gz
+*.tex
+*.pdf

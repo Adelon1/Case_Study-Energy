@@ -103,7 +103,7 @@ def apply_interactive_settings(args: SimpleNamespace) -> SimpleNamespace:
         args.block = "baseload"
     else:
         args.period_days = int(ask("Period length in days", str(args.period_days)))
-        args.block = ask_choice("Block", ["baseload", "peakload", "offpeak"], args.block)
+        args.block = "all"
     if args.model == "lear_model":
         args.regularization = ask_choice(
             "Regularization",
@@ -235,7 +235,7 @@ def baseline_summary_path(
 
     name_parts = ["baseline_model", forecast_setup]
     if forecast_setup == "period_average":
-        name_parts.append(f"{period_days}d_{block}")
+        name_parts.append(f"{period_days}d")
     baseline_folder = output_base_folder / "__".join(name_parts)
     return baseline_folder / "validation_summary.csv"
 
@@ -300,6 +300,8 @@ def write_predictions_csv(predictions: pd.DataFrame, path: Path) -> None:
 
     column_order = [
         constants.TIMESTAMP_COLUMN,
+        "period_end",
+        "block",
         "local_hour",
         "fold",
         "y_true",
@@ -440,7 +442,7 @@ def main() -> None:
         args.forecast_setup,
     ]
     if args.forecast_setup == "period_average":
-        output_name_parts.append(f"{args.period_days}d_{args.block}")
+        output_name_parts.append(f"{args.period_days}d")
     output_folder = output_base_folder / "__".join(output_name_parts)
     output_folder.mkdir(parents=True, exist_ok=True)
     remove_old_validation_outputs(output_folder)

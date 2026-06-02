@@ -68,7 +68,7 @@ def parse_command_line_arguments() -> SimpleNamespace:
         test_end=None,
         training_months=24,
         period_days=None,
-        block=["all"],
+        block="all",
         benchmark="trailing_average",
         curve_price=None,
         regularization=None,
@@ -120,18 +120,9 @@ def apply_interactive_settings(args: SimpleNamespace) -> SimpleNamespace:
     args.training_months = int(ask("Training months before test_begin", str(args.training_months)))
     if args.forecast_setup == "period_average":
         args.period_days = int(ask("Period row length in days", str(args.period_days or 15)))
-        period_blocks = ["baseload", "peakload", "offpeak"]
-        default_block = first_block(args.block)
-        if default_block not in period_blocks:
-            default_block = "baseload"
-        args.block = ask_choice("Block", period_blocks, default_block)
     else:
         args.period_days = None
-        args.block = ask_choice(
-            "Blocks",
-            ["baseload", "peakload", "offpeak", "peak_base_spread", "all"],
-            first_block(args.block),
-        )
+    args.block = "all"
     if args.model == "lear_model":
         args.regularization = ask_choice(
             "Regularization",
@@ -172,21 +163,31 @@ def next_delivery_date(date_text: str) -> str:
     return (pd.to_datetime(date_text, format="%d-%m-%Y") + pd.Timedelta(days=1)).strftime("%d-%m-%Y")
 
 
-def first_block(blocks: str | list[str]) -> str:
-    """Return a stable default for the block prompt."""
-
-    if isinstance(blocks, list):
-        return blocks[0]
-    return blocks
-
-
 def normalize_blocks(blocks: str | list[str]) -> list[str]:
-    """Expand ``all`` into every block supported by hourly curve views."""
+    """Expand ``all`` into the standard three prompt-curve blocks."""
 
     selected = [blocks] if isinstance(blocks, str) else list(blocks)
     if "all" in selected:
-        return ["baseload", "peakload", "offpeak", "peak_base_spread"]
+        return ["baseload", "peakload", "offpeak"]
     return selected
+
+
+def selected_curve_blocks(forecast_setup: str, blocks: str | list[str]) -> list[str]:
+    """Return the curve blocks to analyze for this forecast setup."""
+
+    return normalize_blocks(blocks)
+
+
+def plot_context_label(model_label: str, prediction_window: TimeWindow) -> str:
+    """Return a compact label with model and delivery period for plot titles."""
+
+    period_start = prediction_window.test_begin.strftime("%Y-%m-%d")
+    period_end = prediction_window.test_end.strftime("%Y-%m-%d")
+    if period_start == period_end:
+        period_text = period_start
+    else:
+        period_text = f"{period_start} to {period_end}"
+    return f"Model: {model_label} | Period: {period_text}"
 
 
 def period_folder_slug(start_text: str, end_text: str) -> str:
@@ -220,7 +221,11 @@ def load_predictions_and_feature_table(predictions_path: Path, features_path: st
     )
 
 
-def plot_forecast_actual_band(predictions: pd.DataFrame, output_path: Path) -> None:
+def plot_forecast_actual_band(
+    predictions: pd.DataFrame,
+    output_path: Path,
+    context_label: str,
+) -> None:
     """Plot predicted vs actual prices over time, including bands when available."""
 
     rows = predictions.copy()
@@ -240,38 +245,34 @@ def plot_forecast_actual_band(predictions: pd.DataFrame, output_path: Path) -> N
             alpha=0.18,
             label="P10-P90 band",
         )
-    ax.set_title("Forecast vs Actual Price")
+    period_start = rows["timestamp_utc"].min()
+    period_label = period_start.strftime("%Y-%m-%d")
+    if rows["timestamp_utc"].max().date() != period_start.date():
+        period_label = f"{period_label} to {rows['timestamp_utc'].max().strftime('%Y-%m-%d')}"
+    ax.set_title(f"Forecast vs Actual Price ({period_label})\n{context_label}")
     ax.set_xlabel("Prediction time")
     ax.set_ylabel("EUR/MWh")
     ax.grid(True, alpha=0.25)
     ax.legend()
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%d-%m"))
+    time_span = rows["timestamp_utc"].max() - rows["timestamp_utc"].min()
+    if time_span <= pd.Timedelta(days=1):
+        ax.xaxis.set_major_locator(mdates.HourLocator(interval=3))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+    else:
+        locator = mdates.AutoDateLocator(minticks=4, maxticks=8)
+        ax.xaxis.set_major_locator(locator)
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
     fig.autofmt_xdate()
     fig.tight_layout()
     fig.savefig(output_path, dpi=160)
     plt.close(fig)
 
 
-def plot_price_duration_curve(predictions: pd.DataFrame, output_path: Path) -> None:
-    """Plot sorted predicted and actual prices to expose tail behaviour."""
-
-    predicted = predictions["y_pred"].dropna().sort_values().reset_index(drop=True)
-    fig, ax = plt.subplots(figsize=(9, 5))
-    ax.plot(predicted.index + 1, predicted, label="Predicted", linewidth=1.8)
-    if "y_true" in predictions.columns:
-        actual = predictions["y_true"].dropna().sort_values().reset_index(drop=True)
-        ax.plot(actual.index + 1, actual, label="Actual", linewidth=1.2, alpha=0.8)
-    ax.set_title("Price Duration Curve")
-    ax.set_xlabel("Sorted predicted hour")
-    ax.set_ylabel("EUR/MWh")
-    ax.grid(True, alpha=0.25)
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=160)
-    plt.close(fig)
-
-
-def plot_forecast_heatmap(predictions: pd.DataFrame, output_path: Path) -> None:
+def plot_forecast_heatmap(
+    predictions: pd.DataFrame,
+    output_path: Path,
+    context_label: str,
+) -> None:
     """Plot predicted price shape by date and local hour."""
 
     rows = predictions.dropna(subset=["y_pred"]).copy()
@@ -283,19 +284,25 @@ def plot_forecast_heatmap(predictions: pd.DataFrame, output_path: Path) -> None:
 
     fig, ax = plt.subplots(figsize=(max(9, 0.35 * len(heatmap.columns)), 6))
     image = ax.imshow(heatmap, aspect="auto", origin="lower", cmap="viridis")
-    ax.set_title("Predicted Price Heatmap")
+    ax.set_title(f"Predicted Price Heatmap\n{context_label}")
     ax.set_xlabel("Delivery date Europe/Berlin")
     ax.set_ylabel("Local hour")
     ax.set_yticks(range(0, 24, 3))
-    ax.set_xticks(range(len(heatmap.columns)))
-    ax.set_xticklabels(heatmap.columns, rotation=90, fontsize=8)
+    tick_step = max(1, len(heatmap.columns) // 12)
+    tick_positions = list(range(0, len(heatmap.columns), tick_step))
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels([heatmap.columns[index] for index in tick_positions], rotation=45, ha="right", fontsize=8)
     fig.colorbar(image, ax=ax, label="EUR/MWh")
     fig.tight_layout()
     fig.savefig(output_path, dpi=160)
     plt.close(fig)
 
 
-def plot_fair_value_vs_benchmark(summary: pd.DataFrame, output_path: Path) -> None:
+def plot_fair_value_vs_benchmark(
+    summary: pd.DataFrame,
+    output_path: Path,
+    context_label: str,
+) -> None:
     """Plot forecast fair value against benchmark for every block."""
 
     fig, ax = plt.subplots(figsize=(9, 5))
@@ -305,7 +312,7 @@ def plot_fair_value_vs_benchmark(summary: pd.DataFrame, output_path: Path) -> No
     ax.bar([value + width / 2 for value in x], summary["benchmark_value"], width, label="Benchmark")
     ax.set_xticks(list(x))
     ax.set_xticklabels(summary["block"])
-    ax.set_title("Fair Value vs Benchmark")
+    ax.set_title(f"Fair Value vs Benchmark\n{context_label}")
     ax.set_ylabel("EUR/MWh")
     ax.grid(True, axis="y", alpha=0.25)
     ax.legend()
@@ -314,7 +321,11 @@ def plot_fair_value_vs_benchmark(summary: pd.DataFrame, output_path: Path) -> No
     plt.close(fig)
 
 
-def plot_signal_by_block(summary: pd.DataFrame, output_path: Path) -> None:
+def plot_signal_by_block(
+    summary: pd.DataFrame,
+    output_path: Path,
+    context_label: str,
+) -> None:
     """Plot forecast edge and confidence context by block."""
 
     colors = ["#2b8a3e" if edge > 0 else "#c92a2a" if edge < 0 else "#495057" for edge in summary["edge"]]
@@ -323,7 +334,7 @@ def plot_signal_by_block(summary: pd.DataFrame, output_path: Path) -> None:
     ax.axhline(0, color="black", linewidth=0.8)
     for index, row in summary.iterrows():
         ax.text(index, row["edge"], row["signal"], ha="center", va="bottom" if row["edge"] >= 0 else "top")
-    ax.set_title("Signal Edge by Block")
+    ax.set_title(f"Signal Edge by Block\n{context_label}")
     ax.set_ylabel("Forecast FV - benchmark (EUR/MWh)")
     ax.grid(True, axis="y", alpha=0.25)
     fig.tight_layout()
@@ -380,7 +391,7 @@ def write_run_metadata(
             "prediction_begin": prediction_window.test_begin,
             "prediction_end": prediction_window.test_end,
             "period_days": args.period_days,
-            "blocks": normalize_blocks(args.block),
+            "blocks": selected_curve_blocks(args.forecast_setup, args.block),
             "benchmark": args.benchmark,
             "curve_price": args.curve_price,
             "artifacts": {key: str(value) for key, value in prediction_artifacts.items()},
@@ -471,7 +482,7 @@ def main() -> None:
     predictions = add_proxy_bands_when_missing(predictions, result.metrics_path)
     predictions.to_csv(result.predictions_path, index=False, sep=";")
 
-    selected_blocks = [args.block] if args.forecast_setup == "period_average" else normalize_blocks(args.block)
+    selected_blocks = selected_curve_blocks(args.forecast_setup, args.block)
     curve_views = []
     block_summary_paths = []
     curve_output_folder = output_folder / "curve_translation"
@@ -505,17 +516,17 @@ def main() -> None:
     plots_folder.mkdir(parents=True, exist_ok=True)
     plot_paths = [
         plots_folder / "forecast_actual_band.png",
-        plots_folder / "price_duration_curve.png",
         plots_folder / "fair_value_vs_benchmark.png",
         plots_folder / "signal_by_block.png",
     ]
-    plot_forecast_actual_band(predictions, plot_paths[0])
-    plot_price_duration_curve(predictions, plot_paths[1])
-    plot_fair_value_vs_benchmark(pd.DataFrame([asdict(view) for view in curve_views]), plot_paths[2])
-    plot_signal_by_block(pd.DataFrame([asdict(view) for view in curve_views]), plot_paths[3])
+    plot_label = plot_context_label(model_folder.name, prediction_window)
+    curve_view_table = pd.DataFrame([asdict(view) for view in curve_views])
+    plot_forecast_actual_band(predictions, plot_paths[0], plot_label)
+    plot_fair_value_vs_benchmark(curve_view_table, plot_paths[1], plot_label)
+    plot_signal_by_block(curve_view_table, plot_paths[2], plot_label)
     if args.forecast_setup != "period_average":
         heatmap_path = plots_folder / "forecast_heatmap.png"
-        plot_forecast_heatmap(predictions, heatmap_path)
+        plot_forecast_heatmap(predictions, heatmap_path, plot_label)
         plot_paths.append(heatmap_path)
 
     metadata_path = write_run_metadata(

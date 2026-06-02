@@ -293,11 +293,13 @@ def build_curve_view(
         "prediction_granularity" in period_predictions.columns
         and (period_predictions["prediction_granularity"] == "period_average").all()
     ):
-        if "block" in period_predictions.columns and not period_predictions["block"].eq(block).all():
+        if "block" not in period_predictions.columns:
             raise ValueError(
-                "Period-average predictions were built for a different block. "
-                "Rerun prediction for the selected block."
+                "Period-average predictions need a block column with baseload/peakload/offpeak rows."
             )
+        period_predictions = period_predictions.loc[period_predictions["block"] == block]
+        if period_predictions.empty:
+            raise ValueError(f"Period-average predictions contain no rows for block '{block}'.")
         forecast_value = float(period_predictions["y_pred"].dropna().mean())
         prediction_coverage = float(period_predictions["y_pred"].notna().mean())
         block_band = BlockBand(low=float("nan"), high=float("nan"), has_band=False)

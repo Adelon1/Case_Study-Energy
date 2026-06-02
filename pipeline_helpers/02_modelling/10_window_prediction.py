@@ -132,7 +132,7 @@ def model_folder_for(
         forecast_setup,
     ]
     if forecast_setup == "period_average":
-        name_parts.append(f"{period_days or 'period'}d_{block}")
+        name_parts.append(f"{period_days or 'period'}d")
     return base_folder / "__".join(name_parts)
 
 
@@ -308,9 +308,11 @@ def save_window_prediction_result(
     if forecast_setup == "period_average" and "period_end" in test_data.columns:
         predictions["period_end"] = test_data["period_end"]
         predictions["prediction_granularity"] = "period_average"
+        if "block" in test_data.columns:
+            predictions["block"] = test_data["block"]
     else:
         predictions["prediction_granularity"] = "hourly"
-    predictions["block"] = block
+        predictions["block"] = "all_standard_blocks" if block == "all" else block
     predictions.to_csv(predictions_path, index=False, sep=";")
 
     metrics_frame = pd.DataFrame([prediction_result.metric_row])

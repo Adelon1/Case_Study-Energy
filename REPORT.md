@@ -252,8 +252,8 @@ Three **forecast setups** are supported:
 - **`hourly_period`** — one row per delivery hour, target = hourly price, for a
   multi-day period view. Price-history features are removed, so the period view does not
   depend on prices from inside the period being forecast.
-- **`period_average`** — one row per delivery period of length `period_days`, target =
-  the average price over that period for a chosen block (baseload / peakload / offpeak).
+- **`period_average`** — one row per delivery period and block, target =
+  the average price over that period for baseload, peakload, and offpeak.
   Fundamentals become per-period mean/min/max/std features, and price history becomes
   previous-period target lags.
 
@@ -267,7 +267,7 @@ The feature policy is selected centrally from the forecast setup and model famil
   only load, solar, and wind total.
 - for `period_average`, LEAR / RANSAC-LASSO use numeric period features except raw
   calendar integers, while boosted trees / Theil-Sen use load mean, solar mean, wind mean,
-  `target_lag_1`, and `target_lag_2`.
+  block dummies, `target_lag_1`, and `target_lag_2`.
 
 The module is strict about its contract, and the errors it raises are part of the design:
 
@@ -276,8 +276,8 @@ The module is strict about its contract, and the errors it raises are part of th
   instead of training on a silently shorter feature set.
 - an unknown forecast setup raises *"Unsupported forecast setup: …"*, so a typo can never fall through
   to a wrong-but-plausible run.
-- `period_average` with an unsupported block raises a clear error naming the three valid
-  blocks.
+- `period_average` automatically builds baseload, peakload, and offpeak targets, so the
+  user no longer has to rerun the same model per block.
 
 The result is a small `ModellingDataset` (table, target column, selected feature
 columns, target, feature mode) that the validation engine consumes without ever needing
@@ -314,8 +314,8 @@ grid per target:
 - **`hourly`** target — a row is one hour, so the candidate lags are 24h (same hour
   yesterday), 48h (two days ago), and 168h (same hour last week). The headline baseline
   is the same-hour-last-week lag of 168 rows.
-- **`period_average`** target — a row is one whole delivery period, so the candidate lags
-  are the previous 1, 2, 4, 7, and 12 periods. The `period_days` and `block` settings do
+- **`period_average`** target — a row is one whole delivery period and block, so the
+  candidate lags are the previous 1, 2, 4, 7, and 12 periods of the same block. The `period_days` setting does
   not change the grid: they only change what "one row" already means, so a row-based lag
   scales automatically.
 
@@ -511,7 +511,6 @@ the selected output folder:
 
 - `forecast_actual_band.png` — forecast line, actuals, and the P10–P90 band as a shaded
   region over a recent window.
-- `price_duration_curve.png` — sorted predicted and actual prices, highlighting tails.
 - `fair_value_vs_benchmark.png` — forecast fair value versus benchmark by block.
 - `signal_by_block.png` — edge versus benchmark, coloured by direction.
 - `forecast_heatmap.png` — hourly forecast shape by date and local delivery hour.
@@ -528,12 +527,12 @@ This is Task 3, implemented in `pipeline_helpers/03_curve_translation/` and driv
 
 ### 11.1 Blocks
 
-`01_forecast_blocks.py` aggregates the hourly forecast into the four curve-relevant
-blocks: **baseload**, **peakload**, **offpeak**, and **peak/base spread**.
+`01_forecast_blocks.py` aggregates the hourly forecast into the three standard
+curve-relevant blocks: **baseload**, **peakload**, and **offpeak**.
 Peak/offpeak is defined on German local market time (peak = weekday hours 08:00–20:00
 local), which is correct for German market interpretation and does not disturb the UTC
 joins. `calculate_block_band` aggregates the per-hour P10–P90 band up to a block-level
-band (returning "no band" for the spread block or when band columns are absent).
+band when band columns are present.
 
 ### 11.2 Where the forecast comes from
 

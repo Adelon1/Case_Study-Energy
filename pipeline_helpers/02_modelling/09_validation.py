@@ -177,6 +177,10 @@ def train_predict_window(
     )
     if "local_hour" in test_data.columns:
         predictions["local_hour"] = test_data["local_hour"]
+    if "period_end" in test_data.columns:
+        predictions["period_end"] = test_data["period_end"]
+    if "block" in test_data.columns:
+        predictions["block"] = test_data["block"]
     return TrainPredictResult(
         model_state=model_state,
         metric_row=metric_row,

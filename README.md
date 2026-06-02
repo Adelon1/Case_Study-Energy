@@ -3,7 +3,7 @@
 A reproducible prototype that forecasts **German/Luxembourg hourly day-ahead
 electricity prices** from public ENTSO-E fundamentals, attaches calibrated
 uncertainty bands, and translates the result into **prompt-curve trading views**
-(baseload / peakload / offpeak / peak–base spread) with a long / neutral / short
+(baseload / peakload / offpeak) with a long / neutral / short
 signal, desk action, and invalidation logic. A single programmatic LLM step generates
 grounded commentary.
 
@@ -13,9 +13,9 @@ daily price-curve shapes, calendar). It is not a one-shot
 forecast of future realised prices.
 
 The same code also supports a second target on request — a **period-average forecast**,
-where a single value is predicted for a whole delivery period of length `|P|` days
-(e.g. a month-ahead baseload or peakload average) instead of 24 hourly values. The two
-targets are selected inside the interactive validation prompt.
+where baseload, peakload, and offpeak values are predicted for a whole delivery period
+of length `|P|` days instead of 24 hourly values. The targets are selected inside the
+interactive validation prompt.
 
 > **Documentation**
 > - [`TASK.md`](TASK.md) — the original case-study brief.
@@ -49,22 +49,77 @@ Environment variables (loaded from `.env`, never committed):
 | `OPENAI_API_KEY` | optional | enables real LLM commentary (falls back to deterministic text otherwise) |
 | `OPENAI_MODEL` | optional | commentary model name (default `gpt-4.1-mini`) |
 
-## Quick start
+## Workflow
 
-```bash
-# 1. Build the dataset (download, parse, combine, QA, features)
-.venv/bin/python pipeline_steps/01_build_dataset.py
+All runnable scripts are interactive by default; run them without command-line options and answer the prompts.
 
-# 2. Validate the baseline
-.venv/bin/python pipeline_steps/02_validate_model.py
+### Recommended Workflow
 
-# 3. Validate the headline/improved model
-.venv/bin/python pipeline_steps/02_validate_model.py
+| Step | Command | Use |
+| --- | --- | --- |
+| 1 | `.venv/bin/python pipeline_steps/01_build_dataset.py` | Build raw/interim/processed data, QA report, and feature table. |
+| 2 | `.venv/bin/python pipeline_steps/02_validate_model.py` | Validate one model/setup and save best parameters, metrics, bands, and artifacts. |
+| 3 | `.venv/bin/python pipeline_steps/03_run_forecast_view.py` | Train/predict one requested delivery period and create curve view, plots, report, and optional AI commentary. |
 
-# 4. Run one forecast-view workflow:
-#    train/predict window -> curve translation -> plots -> optional AI commentary
-.venv/bin/python pipeline_steps/03_run_forecast_view.py
-```
+### Possible Workflows
+
+| Workflow | What to run | When to use |
+| --- | --- | --- |
+| Full rebuild | `01_build_dataset.py` → `02_validate_model.py` → `03_run_forecast_view.py` | Use after changing data dates, feature engineering, or model logic. |
+| Model comparison | Run `02_validate_model.py` multiple times | Use to compare baseline, LEAR, boosted trees, Theil-Sen, or RANSAC-LASSO. |
+| Trading view only | Run `03_run_forecast_view.py` | Use after validation already produced a model folder with best parameters. |
+| AI commentary only | Enable AI in `03_run_forecast_view.py` | Use when you want a logged commentary from computed curve-view numbers. |
+
+### Forecast Setups
+
+| Setup | Meaning | Use |
+| --- | --- | --- |
+| `hourly_day_ahead` | Predict one delivery day as 24 hourly prices. | Recommended for next-day DA forecasting. |
+| `hourly_period` | Predict hourly prices over a longer period without price-lag features. | Use for multi-day period views from fundamentals. |
+| `period_average` | Predict baseload, peakload, and offpeak averages for each delivery period. | Use for direct multi-block period forecasts. |
+
+### Main Files
+
+| File | Role |
+| --- | --- |
+| `pipeline_steps/01_build_dataset.py` | Main data-building entry point. |
+| `pipeline_steps/02_validate_model.py` | Main model-validation entry point. |
+| `pipeline_steps/03_run_forecast_view.py` | Main Task-3 forecast-to-curve workflow. |
+| `pipeline_helpers/02_modelling/feature_sets.json` | User-editable mapping from model/setup to feature bundles. |
+| `.env` | User-editable secrets and API model settings. |
+| `REPORT.md` | Final written explanation of methodology and results. |
+
+### What A Normal User May Change
+
+| File / Prompt | What to change |
+| --- | --- |
+| `.env` | Add `ENTSOE_API_KEY`, optional `OPENAI_API_KEY`, and optional `OPENAI_MODEL`. |
+| `01_build_dataset.py` prompts | Change data mode, datasets, and start/end dates. |
+| `02_validate_model.py` prompts | Change model, forecast setup, regularization, and period length. |
+| `03_run_forecast_view.py` prompts | Change delivery day/window, training months, benchmark, and AI commentary. |
+| `pipeline_helpers/02_modelling/feature_sets.json` | Add/remove feature bundles or assign feature sets to models. |
+| `pipeline_helpers/02_modelling/00_constants.py` | Change validation windows, metric thresholds, or model grids. |
+
+### What A Normal User Should Not Change
+
+| File / Folder | Why not |
+| --- | --- |
+| `pipeline_helpers/01_entsoe_data/03_entsoe_api.py` | API mechanics should stay stable unless ENTSO-E changes. |
+| `pipeline_helpers/01_entsoe_data/04_entsoe_xml_to_csv.py` | XML parsing is low-level and easy to break. |
+| `pipeline_helpers/02_modelling/09_validation.py` | Validation engine is shared by every model. |
+| `pipeline_helpers/02_modelling/10_window_prediction.py` | Window prediction is shared by Task-3 workflows. |
+| `pipeline_helpers/03_curve_translation/*.py` | Curve translation logic should change only when the trading methodology changes. |
+| `data/`, `models/`, `outputs/` | Generated artifacts; delete/regenerate them rather than editing by hand. |
+
+### Model Names
+
+| Model | Use |
+| --- | --- |
+| `baseline_model` | Naive benchmark that must be beaten. |
+| `lear_model` | Main LEAR-style regularised linear model. |
+| `boosted_tree_model` | Nonlinear improved model. |
+| `theil_sen_model` | Robust linear check on compact features. |
+| `ransac_lasso_model` | Robust sparse linear check. |
 
 ## Repository layout
 

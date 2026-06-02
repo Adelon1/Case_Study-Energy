@@ -76,7 +76,7 @@ def build_modelling_dataset(
     if forecast_setup in {"hourly_day_ahead", "hourly_period"}:
         return build_hourly_dataset(feature_table, model_name, forecast_setup)
     if forecast_setup == "period_average":
-        return build_period_average_dataset(feature_table, model_name, period_days, block)
+        return build_period_average_dataset(feature_table, model_name, period_days)
     raise ValueError(f"Unsupported forecast setup: {forecast_setup}")
 
 
@@ -263,6 +263,21 @@ def add_target_lag_features(
     return result
 
 
+def add_target_lag_features_by_group(
+    table: pd.DataFrame,
+    target_column: str,
+    group_column: str,
+    lag_rows: list[int],
+) -> pd.DataFrame:
+    """Add target lags separately per group, e.g. per period-average block."""
+
+    result = table.sort_values([group_column, constants.TIMESTAMP_COLUMN]).reset_index(drop=True)
+    grouped_target = result.groupby(group_column, sort=False)[target_column]
+    for lag in lag_rows:
+        result[f"target_lag_{lag}"] = grouped_target.shift(lag)
+    return result.sort_values([constants.TIMESTAMP_COLUMN, group_column]).reset_index(drop=True)
+
+
 def build_hourly_dataset(
     feature_table: pd.DataFrame,
     model_name: str,
@@ -304,9 +319,8 @@ def build_period_average_dataset(
     feature_table: pd.DataFrame,
     model_name: str,
     period_days: int,
-    block: str,
 ) -> ModellingDataset:
-    """Build period-average rows: one target value per delivery period."""
+    """Build period-average rows: one target value per period and block."""
 
     table = feature_table.copy()
     table[constants.TIMESTAMP_COLUMN] = pd.to_datetime(table[constants.TIMESTAMP_COLUMN], utc=True)
@@ -317,23 +331,38 @@ def build_period_average_dataset(
         (table[constants.TIMESTAMP_COLUMN] - first_period)
         // pd.Timedelta(days=period_days)
     ) * pd.Timedelta(days=period_days)
-    table = table.loc[period_block_mask(table, block)].copy()
 
-    aggregations = {
-        constants.TIMESTAMP_COLUMN: ("period_start", "first"),
-        "period_end": ("period_start", lambda values: values.iloc[0] + pd.Timedelta(days=period_days)),
-        PERIOD_TARGET_COLUMN: (constants.TARGET_COLUMN, "mean"),
-        "period_n_hours": (constants.TARGET_COLUMN, "size"),
-    }
-    for column in configured_bundle(load_feature_config(), "period_source_fundamentals"):
-        if column in table.columns:
-            aggregations[f"{column}_mean"] = (column, "mean")
-            aggregations[f"{column}_min"] = (column, "min")
-            aggregations[f"{column}_max"] = (column, "max")
-            aggregations[f"{column}_std"] = (column, "std")
+    period_tables: list[pd.DataFrame] = []
+    for block in ["baseload", "peakload", "offpeak"]:
+        block_table = table.loc[period_block_mask(table, block)].copy()
+        aggregations = {
+            constants.TIMESTAMP_COLUMN: ("period_start", "first"),
+            "period_end": ("period_start", lambda values: values.iloc[0] + pd.Timedelta(days=period_days)),
+            PERIOD_TARGET_COLUMN: (constants.TARGET_COLUMN, "mean"),
+            "period_n_hours": (constants.TARGET_COLUMN, "size"),
+        }
+        for column in configured_bundle(load_feature_config(), "period_source_fundamentals"):
+            if column in block_table.columns:
+                aggregations[f"{column}_mean"] = (column, "mean")
+                aggregations[f"{column}_min"] = (column, "min")
+                aggregations[f"{column}_max"] = (column, "max")
+                aggregations[f"{column}_std"] = (column, "std")
 
-    period_rows = table.groupby("period_start", as_index=False).agg(**aggregations)
-    period_rows = add_target_lag_features(period_rows, PERIOD_TARGET_COLUMN, PERIOD_TARGET_LAGS)
+        block_rows = block_table.groupby("period_start", as_index=False).agg(**aggregations)
+        block_rows["block"] = block
+        period_tables.append(block_rows)
+
+    period_rows = pd.concat(period_tables, ignore_index=True).sort_values(
+        [constants.TIMESTAMP_COLUMN, "block"]
+    )
+    period_rows["block_peakload"] = (period_rows["block"] == "peakload").astype(int)
+    period_rows["block_offpeak"] = (period_rows["block"] == "offpeak").astype(int)
+    period_rows = add_target_lag_features_by_group(
+        period_rows,
+        PERIOD_TARGET_COLUMN,
+        "block",
+        PERIOD_TARGET_LAGS,
+    )
 
     timestamps = pd.to_datetime(period_rows[constants.TIMESTAMP_COLUMN], utc=True)
     period_rows["period_month"] = timestamps.dt.month
