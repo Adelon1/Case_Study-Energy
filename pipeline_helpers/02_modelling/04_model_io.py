@@ -1,4 +1,14 @@
-"""Small helpers for model artifact paths and JSON IO."""
+"""Small helpers for model artifact paths and JSON IO.
+
+Public entry points:
+    ``dataset_name_from_feature_path(...)``
+    ``default_models_base_folder(...)``
+    ``write_json(...)``
+    ``read_json(...)``
+
+``clean_json_value`` is an internal helper that prevents invalid JSON values
+such as ``NaN`` from leaking into metadata artifacts.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +29,11 @@ def clean_json_value(value):
     if isinstance(value, float) and not math.isfinite(value):
         return None
     return value
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 def dataset_name_from_feature_path(feature_path: str | Path) -> str:

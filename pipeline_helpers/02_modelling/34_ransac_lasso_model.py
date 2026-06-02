@@ -5,6 +5,12 @@ look like inliers, and refits on the best inlier set. This can improve the
 normal-price fit when a few training spikes dominate the loss, but it can also
 throw away real scarcity or negative-price regimes. The tail metrics decide
 whether that trade-off is acceptable.
+
+Model contract functions called by validation/window prediction:
+    ``build_param_grid(...)``
+    ``train(...)``
+    ``predict(...)``
+    ``output_folder_name(...)``
 """
 
 from __future__ import annotations
@@ -32,6 +38,11 @@ class RansacLassoState:
     pooled_model: Pipeline | None
     feature_columns: list[str]
     target_transform: str
+
+
+# ---------------------------------------------------------------------------
+# Model contract: train and predict
+# ---------------------------------------------------------------------------
 
 
 def train(train_data: pd.DataFrame, params: dict[str, object]) -> RansacLassoState:
@@ -98,6 +109,11 @@ def predict(
     return predictions
 
 
+# ---------------------------------------------------------------------------
+# Model contract: hyperparameters and naming
+# ---------------------------------------------------------------------------
+
+
 def build_param_grid(
     target_transform: str = "raw",
     **_unused_options,
@@ -125,6 +141,11 @@ def output_folder_name(target_transform: str = "raw", **_unused_options) -> str:
     if target_transform not in model_support.SUPPORTED_TARGET_TRANSFORMS:
         raise ValueError(f"Unsupported target transform: {target_transform}")
     return f"{MODEL_NAME}_{target_transform}"
+
+
+# ---------------------------------------------------------------------------
+# Internals
+# ---------------------------------------------------------------------------
 
 
 def fit_one_model(

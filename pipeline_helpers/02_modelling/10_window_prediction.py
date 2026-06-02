@@ -3,6 +3,20 @@
 Validation answers the question "which params work well across many rolling
 historical windows?". This module answers the operational question "using those
 params, train on this specific history and predict this specific future window".
+
+Public entry points:
+    ``train_and_predict_window(...)``
+        Train on an explicit train window and predict an explicit test window.
+
+    ``train_and_predict_period(...)``
+        Convenience wrapper: train on the months before a requested period.
+
+    ``get_or_create_predictions(...)``
+        Registry-style helper: reuse existing predictions when possible,
+        otherwise retrain for the requested period.
+
+The smaller functions in this file are artifact naming, best-param lookup, and
+prediction-file coverage helpers used by those three entry points.
 """
 
 from __future__ import annotations
@@ -77,6 +91,11 @@ class BestParamsResult:
     source: str
 
 
+# ---------------------------------------------------------------------------
+# Public setup helpers used by pipeline steps
+# ---------------------------------------------------------------------------
+
+
 def build_model_options(
     regularization: str | None = None,
     target_transform: str | None = None,
@@ -117,6 +136,11 @@ def model_folder_for(
     return base_folder / "__".join(name_parts)
 
 
+# ---------------------------------------------------------------------------
+# Period/window naming helpers
+# ---------------------------------------------------------------------------
+
+
 def as_prediction_period(period: DeliveryPeriod) -> PredictionPeriod:
     """Convert a curve-translation period to a modelling prediction period."""
 
@@ -136,6 +160,11 @@ def window_slug(window: TimeWindow) -> str:
         f"train_{window.train_begin:%Y%m%d}_{window.train_end:%Y%m%d}"
         f"__predict_{window.test_begin:%Y%m%d}_{window.test_end:%Y%m%d}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Best-parameter lookup
+# ---------------------------------------------------------------------------
 
 
 def read_best_params(
@@ -180,6 +209,11 @@ def read_best_params(
         "Run pipeline_steps/02_validate_model.py first for tuned hyperparameters."
     )
     return BestParamsResult(fallback_params, "fallback_first_grid_row")
+
+
+# ---------------------------------------------------------------------------
+# Prediction-file reuse checks
+# ---------------------------------------------------------------------------
 
 
 def prediction_file_covers(predictions_path: str | Path, period: PredictionPeriod) -> bool:
@@ -230,6 +264,11 @@ def check_prediction_coverage(
             f"Prediction coverage is below {minimum_coverage:.0%}: {coverage:.2%}",
             RuntimeWarning,
         )
+
+
+# ---------------------------------------------------------------------------
+# Artifact writer
+# ---------------------------------------------------------------------------
 
 
 def save_window_prediction_result(
@@ -315,6 +354,11 @@ def save_window_prediction_result(
         model_path=model_path,
         metadata_path=metadata_path,
     )
+
+
+# ---------------------------------------------------------------------------
+# Public training / prediction entry points
+# ---------------------------------------------------------------------------
 
 
 def train_and_predict_window(
@@ -474,7 +518,7 @@ def get_or_create_predictions(
     period_days: int | None = None,
     block: str = "baseload",
 ) -> PredictionSource:
-    """Use existing period/final predictions, otherwise train for the requested period."""
+    """Use existing period predictions, otherwise train for the requested period."""
 
     if period_days is None:
         period_days = max(1, int((period.end_utc - period.start_utc) / pd.Timedelta(days=1)))

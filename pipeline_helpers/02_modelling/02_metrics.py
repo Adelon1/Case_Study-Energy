@@ -1,4 +1,12 @@
-"""Common forecast error metrics."""
+"""Common forecast error metrics.
+
+Public entry point:
+    ``calculate_metrics(...)``
+
+The validation layer calls this once per train/test window. The helper
+``mean_absolute_error_for_mask`` exists only to keep empty tail-regime handling
+consistent.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +24,11 @@ def mean_absolute_error_for_mask(errors: pd.Series, mask: pd.Series) -> float:
     if not mask.any():
         return float("nan")
     return float(errors.loc[mask].abs().mean())
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 def calculate_metrics(y_true: pd.Series, y_pred: pd.Series) -> dict[str, float]:

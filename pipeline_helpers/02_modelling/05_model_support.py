@@ -5,6 +5,15 @@ Every model module exposes the same small contract to the validation engine:
 holds the plumbing those modules and steps would otherwise duplicate: loading a
 model module by name, reading the feature and target columns the dataset
 injected, transforming the target, and naming output folders.
+
+Public entry points:
+    ``load_model_module(...)``
+    ``model_run_name(...)``
+    ``model_state_diagnostics(...)``
+    ``resolve_target_column(...)``
+    ``resolve_feature_columns(...)``
+    ``transform_target(...)``
+    ``inverse_transform_prediction(...)``
 """
 
 from __future__ import annotations
@@ -19,6 +28,11 @@ constants = importlib.import_module("pipeline_helpers.02_modelling.00_constants"
 
 
 SUPPORTED_TARGET_TRANSFORMS = {"raw", "asinh"}
+
+
+# ---------------------------------------------------------------------------
+# Public API used by pipeline steps and model modules
+# ---------------------------------------------------------------------------
 
 
 def load_model_module(model_name: str) -> ModuleType:

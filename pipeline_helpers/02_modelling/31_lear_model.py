@@ -4,6 +4,14 @@ LEAR fits one regularised linear regression per delivery hour. Every hour shares
 the same leakage-safe feature set but learns its own coefficients. The
 regularisation grid is evaluated by the outer rolling validation, and this
 module selects the best validated setting separately per hour.
+
+Model contract functions called by validation/window prediction:
+    ``build_param_grid(...)``
+    ``train(...)``
+    ``predict(...)``
+    ``choose_best_params(...)``
+    ``select_validation_predictions(...)``
+    ``output_folder_name(...)``
 """
 
 from __future__ import annotations
@@ -40,7 +48,9 @@ class LearModelState:
     n_train_rows_by_hour: dict[int, int]
 
 
-# --- Model contract: train and predict -------------------------------------
+# ---------------------------------------------------------------------------
+# Model contract: train and predict
+# ---------------------------------------------------------------------------
 
 
 def train(train_data: pd.DataFrame, params: dict[str, object]) -> LearModelState:
@@ -118,7 +128,9 @@ def predict(
     return predictions
 
 
-# --- Hyperparameters and naming --------------------------------------------
+# ---------------------------------------------------------------------------
+# Model contract: hyperparameters, selection, and naming
+# ---------------------------------------------------------------------------
 
 
 def build_param_grid(
@@ -236,7 +248,9 @@ def validate_model_choices(regularization: str, target_transform: str) -> None:
         raise ValueError(f"Unsupported target transform: {target_transform}")
 
 
-# --- Internals -------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Internals
+# ---------------------------------------------------------------------------
 
 
 def _train_pooled(

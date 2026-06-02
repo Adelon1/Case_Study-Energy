@@ -1,4 +1,17 @@
-"""Rolling-window validation helpers for model modules."""
+"""Rolling-window validation helpers for model modules.
+
+Public entry points:
+    ``run_rolling_validation(...)``
+        Used by ``pipeline_steps/02_validate_model.py`` to tune hyperparameters.
+
+    ``train_predict_window(...)``
+        Used by ``10_window_prediction.py`` after validation has chosen params.
+
+Most other functions in this file are date-window helpers or scoring helpers.
+The validation layer intentionally knows only the generic model contract:
+``build_param_grid``, ``train``, ``predict``, and optional model-specific
+selection hooks.
+"""
 
 from __future__ import annotations
 
@@ -43,6 +56,137 @@ class TrainPredictResult:
     model_state: object
     metric_row: dict[str, object]
     predictions: pd.DataFrame
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def run_rolling_validation(
+    table: pd.DataFrame,
+    model_module: ModuleType,
+    model_options: dict[str, object] | None = None,
+    show_progress: bool = False,
+    train_months: int = constants.TRAIN_MONTHS,
+    test_months: int = constants.TEST_MONTHS,
+    step_months: int = constants.STEP_MONTHS,
+    feature_columns: list[str] | None = None,
+    target_column: str = constants.TARGET_COLUMN,
+) -> ValidationResult:
+    """Tune a model module over its parameter grid using rolling validation.
+
+    The function builds many train/test windows, evaluates every parameter
+    setting on every window, and then returns:
+      - one row per params/fold in ``metrics``;
+      - the matching out-of-sample predictions in ``predictions``;
+      - the chosen ``best_params``.
+    """
+
+    windows = build_validation_windows(table, train_months, test_months, step_months)
+    param_grid = get_model_param_grid(
+        model_module,
+        model_options,
+        feature_columns=feature_columns,
+    )
+    metric_rows: list[dict[str, object]] = []
+    prediction_tables: list[pd.DataFrame] = []
+
+    for params in param_grid:
+        if show_progress:
+            print(f"Validating params: {params}")
+        for fold_number, window in enumerate(windows, start=1):
+            metric_row, predictions = evaluate_model_on_window(
+                table,
+                model_module,
+                params,
+                window,
+                split_name="validation",
+                fold_number=fold_number,
+                feature_columns=feature_columns,
+                target_column=target_column,
+            )
+            metric_rows.append(metric_row)
+            prediction_tables.append(predictions)
+
+    metrics = pd.DataFrame(metric_rows)
+    predictions = pd.concat(prediction_tables, ignore_index=True)
+    best_params = choose_best_params_for_model(model_module, metrics, predictions)
+
+    return ValidationResult(metrics=metrics, predictions=predictions, best_params=best_params)
+
+
+def train_predict_window(
+    table: pd.DataFrame,
+    model_module: ModuleType,
+    params: dict[str, object],
+    window: TimeWindow,
+    split_name: str,
+    fold_number: int,
+    feature_columns: list[str] | None = None,
+    target_column: str = constants.TARGET_COLUMN,
+) -> TrainPredictResult:
+    """Train one model on one explicit window and return metrics plus predictions.
+
+    This is the common primitive below both validation folds and Task-3 window
+    predictions. It injects ``_feature_columns`` and ``_target_column`` into the
+    params dictionary so model modules can stay generic.
+    """
+
+    train_data = slice_window(table, window.train_begin, window.train_end)
+    test_data = slice_window(table, window.test_begin, window.test_end)
+    model_params = params.copy()
+    if feature_columns is not None:
+        model_params["_feature_columns"] = feature_columns
+    model_params["_target_column"] = target_column
+
+    model_state = model_module.train(train_data, model_params)
+
+    y_pred = model_module.predict(model_state, test_data, model_params)
+    y_true = test_data[target_column]
+    metrics = calculate_metrics(y_true, y_pred)
+    n_test_rows = len(test_data)
+    n_predicted_rows = int(y_pred.notna().sum())
+    prediction_coverage = n_predicted_rows / n_test_rows if n_test_rows else 0.0
+
+    metric_row = {
+        "model": model_module.MODEL_NAME,
+        "params": params_to_string(params),
+        "split": split_name,
+        "fold": fold_number,
+        "train_begin": window.train_begin,
+        "train_end": window.train_end,
+        "test_begin": window.test_begin,
+        "test_end": window.test_end,
+        "n_test_rows": n_test_rows,
+        "n_predicted_rows": n_predicted_rows,
+        "prediction_coverage": prediction_coverage,
+        **metrics,
+    }
+
+    predictions = pd.DataFrame(
+        {
+            constants.TIMESTAMP_COLUMN: test_data[constants.TIMESTAMP_COLUMN],
+            "model": model_module.MODEL_NAME,
+            "params": params_to_string(params),
+            "split": split_name,
+            "fold": fold_number,
+            "y_true": y_true,
+            "y_pred": y_pred,
+        }
+    )
+    if "local_hour" in test_data.columns:
+        predictions["local_hour"] = test_data["local_hour"]
+    return TrainPredictResult(
+        model_state=model_state,
+        metric_row=metric_row,
+        predictions=predictions,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Date-window helpers
+# ---------------------------------------------------------------------------
 
 
 def load_feature_data(path: str | Path) -> pd.DataFrame:
@@ -141,6 +285,11 @@ def build_validation_windows(
     return windows
 
 
+# ---------------------------------------------------------------------------
+# Parameter selection helpers
+# ---------------------------------------------------------------------------
+
+
 def params_to_string(params: dict[str, object]) -> str:
     """Serialize model parameters for result tables."""
 
@@ -214,6 +363,11 @@ def select_predictions_for_params(
     return predictions.loc[predictions["params"] == params_to_string(best_params)].copy()
 
 
+# ---------------------------------------------------------------------------
+# Window scoring helper
+# ---------------------------------------------------------------------------
+
+
 def evaluate_model_on_window(
     table: pd.DataFrame,
     model_module: ModuleType,
@@ -247,112 +401,3 @@ def evaluate_model_on_window(
         )
 
     return result.metric_row, result.predictions
-
-
-def train_predict_window(
-    table: pd.DataFrame,
-    model_module: ModuleType,
-    params: dict[str, object],
-    window: TimeWindow,
-    split_name: str,
-    fold_number: int,
-    feature_columns: list[str] | None = None,
-    target_column: str = constants.TARGET_COLUMN,
-) -> TrainPredictResult:
-    """Train one model on one window and return metrics plus predictions."""
-
-    train_data = slice_window(table, window.train_begin, window.train_end)
-    test_data = slice_window(table, window.test_begin, window.test_end)
-    model_params = params.copy()
-    if feature_columns is not None:
-        model_params["_feature_columns"] = feature_columns
-    model_params["_target_column"] = target_column
-
-    model_state = model_module.train(train_data, model_params)
-
-    y_pred = model_module.predict(model_state, test_data, model_params)
-    y_true = test_data[target_column]
-    metrics = calculate_metrics(y_true, y_pred)
-    n_test_rows = len(test_data)
-    n_predicted_rows = int(y_pred.notna().sum())
-    prediction_coverage = n_predicted_rows / n_test_rows if n_test_rows else 0.0
-
-    metric_row = {
-        "model": model_module.MODEL_NAME,
-        "params": params_to_string(params),
-        "split": split_name,
-        "fold": fold_number,
-        "train_begin": window.train_begin,
-        "train_end": window.train_end,
-        "test_begin": window.test_begin,
-        "test_end": window.test_end,
-        "n_test_rows": n_test_rows,
-        "n_predicted_rows": n_predicted_rows,
-        "prediction_coverage": prediction_coverage,
-        **metrics,
-    }
-
-    predictions = pd.DataFrame(
-        {
-            constants.TIMESTAMP_COLUMN: test_data[constants.TIMESTAMP_COLUMN],
-            "model": model_module.MODEL_NAME,
-            "params": params_to_string(params),
-            "split": split_name,
-            "fold": fold_number,
-            "y_true": y_true,
-            "y_pred": y_pred,
-        }
-    )
-    if "local_hour" in test_data.columns:
-        predictions["local_hour"] = test_data["local_hour"]
-    return TrainPredictResult(
-        model_state=model_state,
-        metric_row=metric_row,
-        predictions=predictions,
-    )
-
-
-def run_rolling_validation(
-    table: pd.DataFrame,
-    model_module: ModuleType,
-    model_options: dict[str, object] | None = None,
-    show_progress: bool = False,
-    train_months: int = constants.TRAIN_MONTHS,
-    test_months: int = constants.TEST_MONTHS,
-    step_months: int = constants.STEP_MONTHS,
-    feature_columns: list[str] | None = None,
-    target_column: str = constants.TARGET_COLUMN,
-) -> ValidationResult:
-    """Tune a model module over its parameter grid using rolling validation."""
-
-    windows = build_validation_windows(table, train_months, test_months, step_months)
-    param_grid = get_model_param_grid(
-        model_module,
-        model_options,
-        feature_columns=feature_columns,
-    )
-    metric_rows: list[dict[str, object]] = []
-    prediction_tables: list[pd.DataFrame] = []
-
-    for params in param_grid:
-        if show_progress:
-            print(f"Validating params: {params}")
-        for fold_number, window in enumerate(windows, start=1):
-            metric_row, predictions = evaluate_model_on_window(
-                table,
-                model_module,
-                params,
-                window,
-                split_name="validation",
-                fold_number=fold_number,
-                feature_columns=feature_columns,
-                target_column=target_column,
-            )
-            metric_rows.append(metric_row)
-            prediction_tables.append(predictions)
-
-    metrics = pd.DataFrame(metric_rows)
-    predictions = pd.concat(prediction_tables, ignore_index=True)
-    best_params = choose_best_params_for_model(model_module, metrics, predictions)
-
-    return ValidationResult(metrics=metrics, predictions=predictions, best_params=best_params)

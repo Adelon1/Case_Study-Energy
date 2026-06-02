@@ -5,6 +5,12 @@ month are passed as categorical features, so the trees can split on specific
 hours and seasons and learn hour-specific, nonlinear behaviour without training
 24 separate models. The default loss is absolute error, which is robust to the
 price spikes that are common in day-ahead markets.
+
+Model contract functions called by validation/window prediction:
+    ``build_param_grid(...)``
+    ``train(...)``
+    ``predict(...)``
+    ``output_folder_name(...)``
 """
 
 from __future__ import annotations
@@ -33,7 +39,9 @@ class BoostedTreesState:
     feature_columns: list[str]
 
 
-# --- Model contract: train and predict -------------------------------------
+# ---------------------------------------------------------------------------
+# Model contract: train and predict
+# ---------------------------------------------------------------------------
 
 
 def train(train_data: pd.DataFrame, params: dict[str, object]) -> BoostedTreesState:
@@ -77,7 +85,9 @@ def predict(
     return predictions
 
 
-# --- Hyperparameters and naming --------------------------------------------
+# ---------------------------------------------------------------------------
+# Model contract: hyperparameters and naming
+# ---------------------------------------------------------------------------
 
 
 def build_param_grid(**_unused_options) -> list[dict[str, object]]:
@@ -125,7 +135,9 @@ def output_folder_name(**_unused_options) -> str:
     return MODEL_NAME
 
 
-# --- Internals -------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Internals
+# ---------------------------------------------------------------------------
 
 
 def _present_categoricals(feature_columns: list[str]) -> list[str]:

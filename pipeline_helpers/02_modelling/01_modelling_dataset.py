@@ -4,6 +4,12 @@ This module is the only place that knows how to turn the large hourly feature
 store into a clean modelling table. Models receive only:
 
 ``timestamp_utc``, one target column, and selected feature columns.
+
+Public entry point:
+    ``build_modelling_dataset(...)``
+
+Everything else in this file is a helper used to construct that one returned
+``ModellingDataset`` object.
 """
 
 from __future__ import annotations
@@ -30,6 +36,55 @@ class ModellingDataset:
     forecast_setup: str
     feature_policy: str
 
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def build_modelling_dataset(
+    feature_table: pd.DataFrame,
+    model_name: str,
+    period_days: int = 1,
+    block: str = "baseload",
+    forecast_setup: str = "hourly_day_ahead",
+) -> ModellingDataset:
+    """Build the single table consumed by validation and model training.
+
+    This is the only function other modules should call from this file.
+
+    Parameters mean:
+      - ``forecast_setup="hourly_day_ahead"``: hourly target, one delivery day
+        ahead, price-lag features may be allowed by the feature policy.
+      - ``forecast_setup="hourly_period"``: hourly target across a longer
+        prediction period, price-lag features are removed because they would not
+        be known for the whole future period.
+      - ``forecast_setup="period_average"``: one row per delivery period, target
+        is the average price over that period.
+
+    The function returns a ``ModellingDataset`` containing:
+      - ``table``: timestamp + target + candidate feature columns.
+      - ``target_column``: the column models must learn.
+      - ``feature_columns``: leakage-safe features selected for this model/setup.
+      - ``feature_policy``: a human-readable explanation stored in metadata.
+    """
+
+    if forecast_setup not in constants.FORECAST_SETUPS:
+        raise ValueError(f"Unsupported forecast setup: {forecast_setup}")
+    if forecast_setup in {"hourly_day_ahead", "hourly_period"}:
+        return build_hourly_dataset(feature_table, model_name, forecast_setup)
+    if forecast_setup == "period_average":
+        return build_period_average_dataset(feature_table, model_name, period_days, block)
+    raise ValueError(f"Unsupported forecast setup: {forecast_setup}")
+
+
+# ---------------------------------------------------------------------------
+# Feature policy constants
+# ---------------------------------------------------------------------------
+
+# These lists encode the final modelling decisions. They are deliberately kept
+# here, close to ``build_modelling_dataset``, because this module owns the
+# question "which columns are legal and useful for this modelling setup?".
 
 PERIOD_TARGET_COLUMN = "period_average_price_eur_per_mwh"
 LINEAR_MODELS = {"lear_model", "ransac_lasso_model"}
@@ -89,6 +144,11 @@ CORE_PERIOD_FEATURES = [
 RAW_PERIOD_CALENDAR_FEATURES = {"period_month", "period_start_weekday"}
 
 
+# ---------------------------------------------------------------------------
+# Generic column helpers
+# ---------------------------------------------------------------------------
+
+
 def existing_columns(table: pd.DataFrame, columns: list[str]) -> list[str]:
     """Keep columns present in the table."""
 
@@ -105,6 +165,11 @@ def require_columns(table: pd.DataFrame, columns: list[str]) -> list[str]:
             preview = f"{preview}, ..."
         raise ValueError(f"Feature table is missing required features: {preview}")
     return columns.copy()
+
+
+# ---------------------------------------------------------------------------
+# Hourly feature selection
+# ---------------------------------------------------------------------------
 
 
 def day_ahead_price_curve_features(table: pd.DataFrame) -> list[str]:
@@ -172,6 +237,11 @@ def select_hourly_features(
     raise ValueError(f"Unsupported model for hourly feature selection: {model_name}")
 
 
+# ---------------------------------------------------------------------------
+# Hourly target dataset
+# ---------------------------------------------------------------------------
+
+
 def add_target_lag_features(
     table: pd.DataFrame,
     target_column: str,
@@ -203,6 +273,11 @@ def build_hourly_dataset(
         forecast_setup=forecast_setup,
         feature_policy=feature_policy,
     )
+
+
+# ---------------------------------------------------------------------------
+# Period-average target dataset
+# ---------------------------------------------------------------------------
 
 
 def period_block_mask(table: pd.DataFrame, block: str) -> pd.Series:
@@ -304,21 +379,3 @@ def select_period_average_features(
         return require_columns(period_rows, CORE_PERIOD_FEATURES), "compact_period_core_fundamentals_target_lags"
 
     raise ValueError(f"Unsupported model for period-average feature selection: {model_name}")
-
-
-def build_modelling_dataset(
-    feature_table: pd.DataFrame,
-    model_name: str,
-    period_days: int = 1,
-    block: str = "baseload",
-    forecast_setup: str = "hourly_day_ahead",
-) -> ModellingDataset:
-    """Build the table consumed by validation and model training."""
-
-    if forecast_setup not in constants.FORECAST_SETUPS:
-        raise ValueError(f"Unsupported forecast setup: {forecast_setup}")
-    if forecast_setup in {"hourly_day_ahead", "hourly_period"}:
-        return build_hourly_dataset(feature_table, model_name, forecast_setup)
-    if forecast_setup == "period_average":
-        return build_period_average_dataset(feature_table, model_name, period_days, block)
-    raise ValueError(f"Unsupported forecast setup: {forecast_setup}")

@@ -8,6 +8,11 @@ wider bands than calm night hours because their residuals are wider.
 
 The bands are leakage-safe in spirit: they are estimated only from realised
 out-of-sample validation errors, never from the value being predicted.
+
+Public entry points:
+    ``residual_quantiles_by_hour(...)``
+    ``add_prediction_bands(...)``
+    ``band_coverage(...)``
 """
 
 from __future__ import annotations
@@ -19,6 +24,11 @@ import pandas as pd
 constants = importlib.import_module("pipeline_helpers.02_modelling.00_constants")
 
 HOUR_COLUMN = "local_hour"
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 def residual_quantiles_by_hour(

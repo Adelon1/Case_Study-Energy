@@ -1,4 +1,14 @@
-"""Naive baseline models for hourly and period-average targets."""
+"""Naive baseline models for hourly and period-average targets.
+
+Model contract functions called by validation/window prediction:
+    ``build_param_grid(...)``
+    ``train(...)``
+    ``predict(...)``
+
+The baseline is intentionally simple. It uses leakage-safe lag columns when the
+modelling dataset provides them, otherwise it falls back to the historical mean
+of the training target.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +22,11 @@ HOURLY_LAG_DAYS = {
     48: 2,
     168: 7,
 }
+
+
+# ---------------------------------------------------------------------------
+# Model contract
+# ---------------------------------------------------------------------------
 
 
 def build_param_grid(
@@ -53,7 +68,7 @@ def train(train_data: pd.DataFrame, params: dict[str, object]) -> None:
 
 
 def predict(model_state: None, test_data: pd.DataFrame, params: dict[str, object]) -> pd.Series:
-    """Predict target values with a generic row-lag column."""
+    """Predict target values with an available lag feature or historical mean."""
 
     if params.get("method") == "historical_mean":
         return pd.Series(float(model_state), index=test_data.index)

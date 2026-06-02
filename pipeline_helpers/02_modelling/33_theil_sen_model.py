@@ -1,4 +1,15 @@
-"""Robust linear benchmark using Theil-Sen regression."""
+"""Robust linear benchmark using Theil-Sen regression.
+
+Model contract functions called by validation/window prediction:
+    ``build_param_grid(...)``
+    ``train(...)``
+    ``predict(...)``
+    ``output_folder_name(...)``
+
+Theil-Sen is robust to outliers but becomes expensive and unstable with many
+correlated features, so this model relies heavily on the modelling dataset's
+feature policy.
+"""
 
 from __future__ import annotations
 
@@ -23,6 +34,11 @@ class TheilSenState:
     model: Pipeline
     feature_columns: list[str]
     target_transform: str
+
+
+# ---------------------------------------------------------------------------
+# Model contract: train and predict
+# ---------------------------------------------------------------------------
 
 
 def train(train_data: pd.DataFrame, params: dict[str, object]) -> TheilSenState:
@@ -58,6 +74,11 @@ def predict(
     return predictions
 
 
+# ---------------------------------------------------------------------------
+# Model contract: hyperparameters and naming
+# ---------------------------------------------------------------------------
+
+
 def build_param_grid(
     target_transform: str = "raw",
     **_unused_options,
@@ -80,6 +101,11 @@ def output_folder_name(target_transform: str = "raw", **_unused_options) -> str:
     if target_transform not in model_support.SUPPORTED_TARGET_TRANSFORMS:
         raise ValueError(f"Unsupported target transform: {target_transform}")
     return f"{MODEL_NAME}_{target_transform}"
+
+
+# ---------------------------------------------------------------------------
+# Internals
+# ---------------------------------------------------------------------------
 
 
 def fit_one_model(
