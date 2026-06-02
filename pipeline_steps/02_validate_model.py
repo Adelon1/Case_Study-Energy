@@ -371,6 +371,7 @@ def save_final_model_artifacts(
     model_path = output_folder / "model.joblib"
     predictions_path = output_folder / "predictions.csv"
     metadata_path = output_folder / "metadata.json"
+    best_params_path = output_folder / "best_params.json"
     metadata_best_params = {
         key: value
         for key, value in best_params.items()
@@ -380,6 +381,7 @@ def save_final_model_artifacts(
 
     joblib.dump(saved_result.model_state, model_path)
     write_predictions_csv(saved_predictions, predictions_path)
+    write_json(best_params, best_params_path)
     write_json(
         {
             "model": model_module.MODEL_NAME,

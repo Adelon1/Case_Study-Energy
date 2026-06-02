@@ -536,7 +536,7 @@ band (returning "no band" for the spread block or when band columns are absent).
 
 ### 11.2 Where the forecast comes from
 
-`10_period_prediction.py` resolves the forecast for a requested period from one of three
+`10_window_prediction.py` resolves the forecast for a requested period from one of three
 sources, in priority order: an existing period prediction, the existing out-of-sample
 validation predictions, or a freshly retrained rolling window. Reusing validation
 predictions where possible is what lets a historical period carry a real empirical
@@ -609,7 +609,7 @@ Top-level pipeline steps (`pipeline_steps/`, numbered in run order):
 - `01_build_dataset.py` — download, parse, combine, QA, feature table.
 - `02_validate_model.py` — rolling validation, metrics, bands, artifacts.
 - `03_plot_validation.py` — the three validation figures.
-- `04_predict_day_ahead.py` — predict one delivery day as a 24-hour vector.
+- `04_predict_window.py` — train once on a chosen window and predict the remaining window.
 - `05_translate_curve_view.py` — curve fair-value translation (+ optional commentary).
 - `06_generate_ai_commentary.py` — standalone LLM commentary.
 
@@ -620,7 +620,7 @@ Data helpers (`pipeline_helpers/01_entsoe_data/`): `00_constants.py`, `01_date_w
 Modelling helpers (`pipeline_helpers/02_modelling/`): `00_constants.py`, `02_metrics.py`,
 `03_prediction_bands.py`, `09_validation.py`, `30_baseline_model.py`, `31_lear_model.py`,
 `32_boosted_tree_model.py`, `33_theil_sen_model.py`, `34_ransac_lasso_model.py`,
-`10_period_prediction.py`, plus
+`10_window_prediction.py`, plus
 `05_model_support.py`, `04_model_io.py`,
 `01_modelling_dataset.py`.
 

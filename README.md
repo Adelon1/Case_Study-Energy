@@ -71,10 +71,10 @@ Environment variables (loaded from `.env`, never committed):
 .venv/bin/python pipeline_steps/06_generate_ai_commentary.py
 ```
 
-Forecast a single delivery day as a 24-hour vector:
+Train on one chosen part of a date window and predict the remaining part:
 
 ```bash
-.venv/bin/python pipeline_steps/04_predict_day_ahead.py
+.venv/bin/python pipeline_steps/04_predict_window.py
 ```
 
 ## Repository layout
@@ -84,7 +84,7 @@ pipeline_steps/                  # runnable entry points, numbered in run order
   01_build_dataset.py            # download → parse → combine → QA → features
   02_validate_model.py           # rolling validation, metrics, bands, artifacts
   03_plot_validation.py          # forecast-vs-actual, MAE-by-hour, residual figures
-  04_predict_day_ahead.py        # one delivery day as a 24h vector
+  04_predict_window.py           # one chosen train/predict window
   05_translate_curve_view.py     # hourly forecast → curve views + signal
   06_generate_ai_commentary.py   # LLM commentary with logging + fallback
 

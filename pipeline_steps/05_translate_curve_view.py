@@ -20,14 +20,14 @@ if str(PROJECT_ROOT) not in sys.path:
 constants = importlib.import_module("pipeline_helpers.03_curve_translation.00_constants")
 curve_view = importlib.import_module("pipeline_helpers.03_curve_translation.02_curve_view")
 forecast_blocks = importlib.import_module("pipeline_helpers.03_curve_translation.01_forecast_blocks")
-period_prediction = importlib.import_module("pipeline_helpers.02_modelling.10_period_prediction")
+window_prediction = importlib.import_module("pipeline_helpers.02_modelling.10_window_prediction")
 ai_commentary_step = importlib.import_module("pipeline_steps.06_generate_ai_commentary")
 
 build_curve_view = curve_view.build_curve_view
 write_curve_view_outputs = curve_view.write_curve_view_outputs
 parse_utc_period = forecast_blocks.parse_utc_period
-build_model_options = period_prediction.build_model_options
-get_or_create_predictions = period_prediction.get_or_create_predictions
+build_model_options = window_prediction.build_model_options
+get_or_create_predictions = window_prediction.get_or_create_predictions
 write_ai_commentary = ai_commentary_step.generate_commentary
 
 

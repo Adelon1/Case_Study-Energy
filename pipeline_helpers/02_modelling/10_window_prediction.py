@@ -1,4 +1,9 @@
-"""Find, train, save, and reuse predictions for requested delivery periods."""
+"""Train, save, and reuse model predictions for explicit delivery windows.
+
+Validation answers the question "which params work well across many rolling
+historical windows?". This module answers the operational question "using those
+params, train on this specific history and predict this specific future window".
+"""
 
 from __future__ import annotations
 
@@ -45,7 +50,7 @@ class PredictionPeriod:
 
 @dataclass(frozen=True)
 class PeriodPredictionResult:
-    """Artifacts produced by a period-specific prediction run."""
+    """Artifacts produced by a period/window-specific prediction run."""
 
     predictions_path: Path
     metrics_path: Path
@@ -116,6 +121,15 @@ def period_slug(period: PredictionPeriod) -> str:
     return f"{period.start_utc:%Y%m%d}_{period.end_utc:%Y%m%d}"
 
 
+def window_slug(window: TimeWindow) -> str:
+    """Build a stable suffix that records both training and prediction windows."""
+
+    return (
+        f"train_{window.train_begin:%Y%m%d}_{window.train_end:%Y%m%d}"
+        f"__predict_{window.test_begin:%Y%m%d}_{window.test_end:%Y%m%d}"
+    )
+
+
 def read_best_params(
     model_folder: str | Path,
     model_module,
@@ -128,6 +142,13 @@ def read_best_params(
     best_params_path = model_folder / "best_params.json"
     if best_params_path.exists():
         return read_json(best_params_path)
+
+    metadata_path = model_folder / "metadata.json"
+    if metadata_path.exists():
+        metadata = read_json(metadata_path)
+        best_params = metadata.get("best_params")
+        if isinstance(best_params, dict):
+            return best_params
 
     summary_path = model_folder / "validation_summary.csv"
     if summary_path.exists():
@@ -191,23 +212,116 @@ def check_prediction_coverage(
         )
 
 
-def train_and_predict_period(
+def save_window_prediction_result(
+    prediction_result,
+    test_data: pd.DataFrame,
+    feature_path: str | Path,
+    model_module,
+    model_options: dict[str, object],
+    best_params: dict[str, object],
+    output_folder: str | Path,
+    artifact_subfolder: str,
+    forecast_setup: str,
+    feature_policy: str,
+    feature_columns: list[str],
+    period_days: int,
+    block: str,
+    window: TimeWindow,
+) -> PeriodPredictionResult:
+    """Save one trained model, its predictions, metrics, and metadata.
+
+    The same format is used for day-ahead simulations, period forecasts, and
+    curve-translation retrains. Keeping this in one place prevents the classic
+    "same prediction saved three different ways" mess.
+    """
+
+    output_folder = Path(output_folder)
+    artifact_folder = output_folder / artifact_subfolder
+    artifact_folder.mkdir(parents=True, exist_ok=True)
+
+    predictions_path = artifact_folder / "predictions.csv"
+    metrics_path = artifact_folder / "metrics.csv"
+    model_path = artifact_folder / "model.joblib"
+    metadata_path = artifact_folder / "metadata.json"
+
+    predictions = prediction_result.predictions.copy()
+    if forecast_setup == "period_average" and "period_end" in test_data.columns:
+        predictions["period_end"] = test_data["period_end"]
+        predictions["prediction_granularity"] = "period_average"
+    else:
+        predictions["prediction_granularity"] = "hourly"
+    predictions["block"] = block
+    predictions.to_csv(predictions_path, index=False, sep=";")
+
+    metrics_frame = pd.DataFrame([prediction_result.metric_row])
+    numeric_columns = metrics_frame.select_dtypes("number").columns
+    metrics_frame[numeric_columns] = metrics_frame[numeric_columns].round(2)
+    metrics_frame.to_csv(metrics_path, index=False, sep=";")
+
+    metadata_params = {
+        key: value
+        for key, value in best_params.items()
+        if key != "params_by_hour"
+    }
+    joblib.dump(prediction_result.model_state, model_path)
+    write_json(
+        {
+            "model": model_module.MODEL_NAME,
+            "model_options": model_options,
+            "params": metadata_params,
+            "feature_csv": str(feature_path),
+            "forecast_setup": forecast_setup,
+            "feature_policy": feature_policy,
+            "period_days": period_days,
+            "block": block,
+            "feature_columns": feature_columns,
+            "train_begin": window.train_begin,
+            "train_end": window.train_end,
+            "prediction_begin": window.test_begin,
+            "prediction_end": window.test_end,
+            "predictions_path": str(predictions_path),
+            "metrics_path": str(metrics_path),
+            "training_diagnostics": model_state_diagnostics(prediction_result.model_state),
+            "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        },
+        metadata_path,
+    )
+
+    return PeriodPredictionResult(
+        predictions_path=predictions_path,
+        metrics_path=metrics_path,
+        model_path=model_path,
+        metadata_path=metadata_path,
+    )
+
+
+def train_and_predict_window(
     feature_path: str | Path,
     model_name: str,
     model_options: dict[str, object],
     output_folder: str | Path,
-    period: PredictionPeriod,
-    train_months: int = constants.TRAIN_MONTHS,
+    window: TimeWindow,
     forecast_setup: str = "hourly_period",
     period_days: int | None = None,
     block: str = "baseload",
+    artifact_parent: str = "window_predictions",
+    artifact_subfolder: str | None = None,
 ) -> PeriodPredictionResult:
-    """Train on the previous rolling window and predict the requested period."""
+    """Train on one explicit window and predict one explicit window.
+
+    Mathematically:
+
+    ``train = [window.train_begin, window.train_end)``
+    ``predict = [window.test_begin, window.test_end)``
+
+    This is intentionally similar to one fold of rolling validation, but it is
+    user-directed instead of automatically generated.
+    """
 
     model_module = load_model_module(model_name)
     feature_table = load_feature_data(feature_path)
     if period_days is None:
-        period_days = max(1, int((period.end_utc - period.start_utc) / pd.Timedelta(days=1)))
+        period_days = max(1, int((window.test_end - window.test_begin) / pd.Timedelta(days=1)))
     modelling_dataset = build_modelling_dataset(
         feature_table=feature_table,
         model_name=model_module.MODEL_NAME,
@@ -217,22 +331,26 @@ def train_and_predict_period(
     )
     table = modelling_dataset.table
     feature_columns = modelling_dataset.feature_columns
-    train_begin = add_months(period.start_utc, -train_months)
-    train_end = period.start_utc
 
     data_begin = table[constants.TIMESTAMP_COLUMN].min()
-    if train_begin < data_begin:
+    data_end = table[constants.TIMESTAMP_COLUMN].max() + pd.Timedelta(hours=1)
+    if window.train_begin < data_begin:
         raise ValueError(
-            "Requested period is too early for the configured rolling training window. "
-            f"Need data from {train_begin}, but feature data starts at {data_begin}."
+            "Requested training window starts before the feature table. "
+            f"Need data from {window.train_begin}, but feature data starts at {data_begin}."
+        )
+    if window.test_end > data_end:
+        raise ValueError(
+            "Requested prediction window ends after the feature table. "
+            f"Need data until {window.test_end}, but feature data ends at {data_end}."
         )
 
-    train_data = slice_window(table, train_begin, train_end)
-    test_data = slice_window(table, period.start_utc, period.end_utc)
+    train_data = slice_window(table, window.train_begin, window.train_end)
+    test_data = slice_window(table, window.test_begin, window.test_end)
     if train_data.empty:
         raise ValueError("Training window is empty.")
     if test_data.empty:
-        raise ValueError("Requested prediction period is empty in the feature table.")
+        raise ValueError("Requested prediction window is empty in the feature table.")
 
     output_folder = Path(output_folder)
     grid_options = {
@@ -252,70 +370,70 @@ def train_and_predict_period(
         model_module=model_module,
         params=best_params,
         window=TimeWindow(
-            train_begin=train_begin,
-            train_end=train_end,
-            test_begin=period.start_utc,
-            test_end=period.end_utc,
+            train_begin=window.train_begin,
+            train_end=window.train_end,
+            test_begin=window.test_begin,
+            test_end=window.test_end,
         ),
-        split_name="period_prediction",
+        split_name="window_prediction",
         fold_number=1,
         feature_columns=feature_columns,
         target_column=modelling_dataset.target_column,
     )
 
-    period_folder = output_folder / "period_predictions" / period_slug(period)
-    period_folder.mkdir(parents=True, exist_ok=True)
-
-    predictions_path = period_folder / "predictions.csv"
-    metrics_path = period_folder / "metrics.csv"
-    model_path = period_folder / "model.joblib"
-    metadata_path = period_folder / "metadata.json"
-    metadata_params = {
-        key: value
-        for key, value in best_params.items()
-        if key != "params_by_hour"
-    }
-
-    predictions = prediction_result.predictions
-    if forecast_setup == "period_average" and "period_end" in test_data.columns:
-        predictions["period_end"] = test_data["period_end"]
-        predictions["prediction_granularity"] = "period_average"
-        predictions["block"] = block
-    else:
-        predictions["prediction_granularity"] = "hourly"
-        predictions["block"] = block
-    predictions.to_csv(predictions_path, index=False, sep=";")
-    metrics_frame = pd.DataFrame([prediction_result.metric_row])
-    numeric_columns = metrics_frame.select_dtypes("number").columns
-    metrics_frame[numeric_columns] = metrics_frame[numeric_columns].round(2)
-    metrics_frame.to_csv(metrics_path, index=False)
-    joblib.dump(prediction_result.model_state, model_path)
-    write_json(
-        {
-            "model": model_module.MODEL_NAME,
-            "model_options": model_options,
-            "params": metadata_params,
-            "feature_csv": str(feature_path),
-            "forecast_setup": modelling_dataset.forecast_setup,
-            "feature_policy": modelling_dataset.feature_policy,
-            "period_days": period_days,
-            "block": block,
-            "feature_columns": feature_columns,
-            "train_begin": train_begin,
-            "train_end": train_end,
-            "prediction_begin": period.start_utc,
-            "prediction_end": period.end_utc,
-            "training_diagnostics": model_state_diagnostics(prediction_result.model_state),
-            "created_at_utc": datetime.now(timezone.utc).isoformat(),
-        },
-        metadata_path,
+    return save_window_prediction_result(
+        prediction_result=prediction_result,
+        test_data=test_data,
+        feature_path=feature_path,
+        model_module=model_module,
+        model_options=model_options,
+        best_params=best_params,
+        output_folder=output_folder,
+        artifact_subfolder=artifact_subfolder or f"{artifact_parent}/{window_slug(window)}",
+        forecast_setup=forecast_setup,
+        feature_policy=modelling_dataset.feature_policy,
+        feature_columns=feature_columns,
+        period_days=period_days,
+        block=block,
+        window=window,
     )
 
-    return PeriodPredictionResult(
-        predictions_path=predictions_path,
-        metrics_path=metrics_path,
-        model_path=model_path,
-        metadata_path=metadata_path,
+
+def train_and_predict_period(
+    feature_path: str | Path,
+    model_name: str,
+    model_options: dict[str, object],
+    output_folder: str | Path,
+    period: PredictionPeriod,
+    train_months: int = constants.TRAIN_MONTHS,
+    forecast_setup: str = "hourly_period",
+    period_days: int | None = None,
+    block: str = "baseload",
+) -> PeriodPredictionResult:
+    """Train on the months immediately before a requested delivery period.
+
+    This is the curve-translation convenience wrapper:
+
+    ``train = [period.start - train_months, period.start)``
+    ``predict = [period.start, period.end)``
+    """
+
+    window = TimeWindow(
+        train_begin=add_months(period.start_utc, -train_months),
+        train_end=period.start_utc,
+        test_begin=period.start_utc,
+        test_end=period.end_utc,
+    )
+    return train_and_predict_window(
+        feature_path=feature_path,
+        model_name=model_name,
+        model_options=model_options,
+        output_folder=output_folder,
+        window=window,
+        forecast_setup=forecast_setup,
+        period_days=period_days,
+        block=block,
+        artifact_subfolder=f"period_predictions/{period_slug(period)}",
     )
 
 
