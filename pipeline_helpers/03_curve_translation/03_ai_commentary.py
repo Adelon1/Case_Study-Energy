@@ -4,6 +4,12 @@ This is a helper used by the forecast-view pipeline, not a standalone pipeline
 step. It calls an OpenAI model using ``OPENAI_API_KEY`` from ``.env`` or the
 process environment, logs prompt/output/failures, and writes a deterministic
 fallback if the API is unavailable.
+
+Public entry point:
+    ``generate_commentary(...)``
+
+All other functions prepare the prompt, call/extract the API response, or write
+auditable logs and deterministic fallback text.
 """
 
 from __future__ import annotations
@@ -23,6 +29,11 @@ OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 
 class OpenAIRequestError(RuntimeError):
     """Raised when the OpenAI API returns a non-success response."""
+
+
+# ---------------------------------------------------------------------------
+# Prompt and log helpers
+# ---------------------------------------------------------------------------
 
 
 def utc_timestamp_slug() -> str:
@@ -73,6 +84,11 @@ def write_json_log(path: Path, data: dict[str, object]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True, default=str), encoding="utf-8")
 
 
+# ---------------------------------------------------------------------------
+# OpenAI API helpers
+# ---------------------------------------------------------------------------
+
+
 def call_openai_responses_api(prompt: str, api_key: str, model: str) -> dict[str, object]:
     """Call OpenAI's Responses API using direct HTTP."""
 
@@ -114,6 +130,11 @@ def extract_output_text(response_json: dict[str, object]) -> str:
     if not text_parts:
         raise ValueError("OpenAI response did not contain extractable output text.")
     return "\n".join(text_parts)
+
+
+# ---------------------------------------------------------------------------
+# Fallback and public API
+# ---------------------------------------------------------------------------
 
 
 def deterministic_fallback_commentary(summary: dict[str, object], failure_reason: str) -> str:

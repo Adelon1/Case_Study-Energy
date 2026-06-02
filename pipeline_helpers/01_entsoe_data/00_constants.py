@@ -4,6 +4,12 @@ The project needs a few stable values in many places: the ENTSO-E API URL,
 Germany's bidding-zone code, timestamp formats, and the mapping from friendly
 dataset names to ENTSO-E query parameters. Keeping those values here makes the
 pipeline easier to audit and change.
+
+Public entry point:
+    ``get_entsoe_dataset_request(...)``
+
+Everything above that function is configuration data used by ingestion and XML
+parsing.
 """
 
 from __future__ import annotations
@@ -106,6 +112,11 @@ ENTSOE_DATASETS: dict[str, EntsoeDatasetRequest] = {
         required_time_series_tags={},
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 def get_entsoe_dataset_request(name: str) -> EntsoeDatasetRequest:

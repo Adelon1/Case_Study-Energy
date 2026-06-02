@@ -1,4 +1,12 @@
-"""Create modelling features from the clean hourly ENTSO-E dataset."""
+"""Create modelling features from the clean hourly ENTSO-E dataset.
+
+Public entry points:
+    ``build_feature_table(...)``
+    ``write_feature_dataset(...)``
+
+The helpers are ordered by feature family:
+    fundamentals -> local calendar -> previous UTC daily price curves.
+"""
 
 from __future__ import annotations
 
@@ -22,6 +30,11 @@ class FeatureDataset:
 
     path: Path
     table: pd.DataFrame
+
+
+# ---------------------------------------------------------------------------
+# Fundamental features
+# ---------------------------------------------------------------------------
 
 
 def safe_divide(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
@@ -74,6 +87,11 @@ def add_fundamental_features(table: pd.DataFrame) -> pd.DataFrame:
         )
 
     return features
+
+
+# ---------------------------------------------------------------------------
+# German local calendar features
+# ---------------------------------------------------------------------------
 
 
 def local_german_holiday_flag(timestamp_local: pd.Series) -> pd.Series:
@@ -143,6 +161,11 @@ def add_calendar_features(table: pd.DataFrame) -> pd.DataFrame:
     return features
 
 
+# ---------------------------------------------------------------------------
+# Previous UTC daily price curve features
+# ---------------------------------------------------------------------------
+
+
 def add_daily_price_curve_lag_features(table: pd.DataFrame) -> pd.DataFrame:
     """Add previous UTC daily price shapes for LEAR-style intraday dependence."""
 
@@ -190,6 +213,11 @@ def add_daily_price_curve_lag_features(table: pd.DataFrame) -> pd.DataFrame:
         )
 
     return features.drop(columns=["utc_date_for_lags"])
+
+
+# ---------------------------------------------------------------------------
+# Public feature-table builders
+# ---------------------------------------------------------------------------
 
 
 def reindex_to_full_hourly_grid(table: pd.DataFrame) -> pd.DataFrame:

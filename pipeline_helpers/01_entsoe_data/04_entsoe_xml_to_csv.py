@@ -1,4 +1,12 @@
-"""Parse ENTSO-E XML responses into simple timestamp/value CSV tables."""
+"""Parse ENTSO-E XML responses into simple timestamp/value CSV tables.
+
+Public entry points:
+    ``parse_entsoe_xml_to_table(...)``
+    ``write_dataset_csv_from_xml_files(...)``
+
+All helpers above the public parser hide ENTSO-E XML details: namespaces,
+resolutions, variable block curves, and TimeSeries filters.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +21,11 @@ import pandas as pd
 constants = importlib.import_module("pipeline_helpers.01_entsoe_data.00_constants")
 
 RESOLUTION_PATTERN = re.compile(r"^PT(?P<number>\d+)(?P<unit>M|H)$")
+
+
+# ---------------------------------------------------------------------------
+# XML parsing helpers
+# ---------------------------------------------------------------------------
 
 
 def xml_namespace(root: ET.Element) -> dict[str, str]:
@@ -117,6 +130,11 @@ def expand_points_to_all_positions(
             if 1 <= expanded_position <= total_positions:
                 expanded.append((expanded_position, value))
     return expanded
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 def parse_entsoe_xml_to_table(xml_path: str | Path, dataset: str) -> pd.DataFrame:

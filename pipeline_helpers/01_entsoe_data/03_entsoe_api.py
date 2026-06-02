@@ -8,6 +8,12 @@ This module handles only communication with ENTSO-E:
 4. return or save the raw XML response.
 
 Parsing XML into CSV is intentionally separate from this file.
+
+Public entry points:
+    ``send_entsoe_get_request(...)``
+    ``save_raw_xml_response(...)``
+
+The other functions load configuration or build validated request parameters.
 """
 
 from __future__ import annotations
@@ -25,6 +31,11 @@ constants = importlib.import_module("pipeline_helpers.01_entsoe_data.00_constant
 
 class EntsoeApiConfigurationError(RuntimeError):
     """Raised when the ENTSO-E API token or local API setup is missing."""
+
+
+# ---------------------------------------------------------------------------
+# Configuration and request-parameter helpers
+# ---------------------------------------------------------------------------
 
 
 def load_entsoe_api_key(env_path: str | Path = ".env") -> str:
@@ -67,6 +78,11 @@ def build_get_query_parameters(
         "periodStart": format_entsoe_datetime(start),
         "periodEnd": format_entsoe_datetime(end),
     }
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 def send_entsoe_get_request(

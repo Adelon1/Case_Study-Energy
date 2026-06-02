@@ -1,4 +1,12 @@
-"""Build risk-adjusted prompt-curve views from forecast blocks."""
+"""Build risk-adjusted prompt-curve views from forecast blocks.
+
+Public entry points:
+    ``build_curve_view(...)``
+    ``write_curve_view_outputs(...)``
+
+Everything else is a helper for one of the three translation steps:
+    benchmark construction -> forecast band/risk buffer -> trading signal text.
+"""
 
 from __future__ import annotations
 
@@ -52,6 +60,11 @@ class CurveView:
     tail_metric_name: str
     tail_metric_value: float
     prediction_coverage: float
+
+
+# ---------------------------------------------------------------------------
+# Benchmark helpers
+# ---------------------------------------------------------------------------
 
 
 def benchmark_manual(value: float) -> BenchmarkResult:
@@ -147,6 +160,11 @@ def build_benchmark(
     if method == "same_month_history":
         return benchmark_same_month_history(feature_table, period, block)
     raise ValueError(f"Unsupported benchmark method: {method}")
+
+
+# ---------------------------------------------------------------------------
+# Risk-buffer and signal helpers
+# ---------------------------------------------------------------------------
 
 
 def read_metric_value(metrics_path: str | Path, column: str) -> float:
@@ -246,6 +264,11 @@ def invalidation_logic() -> str:
         "changes the supply stack; if recent model error exceeds validation error; "
         "or if liquidity/execution prices differ materially from the benchmark."
     )
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 def build_curve_view(

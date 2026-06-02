@@ -1,4 +1,12 @@
-"""Convert user-friendly local delivery dates into ENTSO-E UTC windows."""
+"""Convert user-friendly local delivery dates into ENTSO-E UTC windows.
+
+Public entry points:
+    ``parse_local_date_window(...)``
+    ``split_local_date_window_into_months(...)``
+
+The API user thinks in German local delivery dates. ENTSO-E expects UTC
+``yyyyMMddHHmm`` timestamps. This file is the translation layer between both.
+"""
 
 from __future__ import annotations
 
@@ -24,10 +32,20 @@ class LocalDateWindow:
     entsoe_end: str
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
 def format_local_date(timestamp: pd.Timestamp) -> str:
     """Format a timestamp as ``DD-MM-YYYY``."""
 
     return timestamp.strftime("%d-%m-%Y")
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 def parse_local_date_window(start: str, end: str) -> LocalDateWindow:

@@ -1,4 +1,11 @@
-"""Create matching numbered data-stage folders for one pipeline run."""
+"""Create matching numbered data-stage folders for one pipeline run.
+
+Public entry points:
+    ``create_dataset_folders(...)``
+    ``create_folders_for_mode(...)``
+
+The smaller naming helpers only decide which folder name is still available.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +21,11 @@ class DatasetFolders:
     raw: Path
     interim: Path
     processed: Path
+
+
+# ---------------------------------------------------------------------------
+# Folder-name helpers
+# ---------------------------------------------------------------------------
 
 
 def next_dataset_name(base_dir: str | Path = "data/01_raw") -> str:
@@ -37,6 +49,11 @@ def available_named_folder(preferred_name: str, base_dir: str | Path = "data/01_
     while (base_path / f"{preferred_name}_{index}").exists():
         index += 1
     return f"{preferred_name}_{index}"
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 def create_dataset_folders(dataset_name: str | None = None) -> DatasetFolders:

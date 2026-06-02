@@ -1,4 +1,12 @@
-"""Combine standardized per-dataset CSV files into one hourly model table."""
+"""Combine standardized per-dataset CSV files into one hourly model table.
+
+Public entry point:
+    ``write_combined_dataset(...)``
+
+This stage reads one CSV per ENTSO-E dataset, joins them on UTC timestamps,
+aggregates sub-hourly data to hourly values, and applies leakage-safe forecast
+imputation before feature engineering.
+"""
 
 from __future__ import annotations
 
@@ -39,6 +47,11 @@ class CombinedDataset:
     imputation_report: ImputationReport
 
 
+# ---------------------------------------------------------------------------
+# CSV merge helpers
+# ---------------------------------------------------------------------------
+
+
 def read_standardized_dataset_csv(path: str | Path) -> pd.DataFrame:
     """Read a parsed dataset CSV and normalize its timestamp column."""
 
@@ -71,6 +84,11 @@ def combine_interim_csvs(interim_folder: str | Path, datasets: list[str]) -> pd.
         combined["timestamp_utc"].dt.tz_convert(constants.GERMANY_MARKET_TIMEZONE),
     )
     return combined
+
+
+# ---------------------------------------------------------------------------
+# Hourly alignment and leakage-safe cleaning
+# ---------------------------------------------------------------------------
 
 
 def filter_by_utc_window(
@@ -167,6 +185,11 @@ def fill_missing_forecasts_from_previous_day(
         dropped_rows_after_fill=dropped_rows_after_fill,
     )
     return filled, report
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 def write_combined_dataset(

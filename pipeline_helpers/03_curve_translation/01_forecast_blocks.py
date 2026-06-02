@@ -1,4 +1,15 @@
-"""Aggregate hourly forecasts into curve-relevant delivery blocks."""
+"""Aggregate hourly forecasts into curve-relevant delivery blocks.
+
+Public entry points:
+    ``parse_utc_period(...)``
+    ``resolve_named_period(...)``
+    ``filter_delivery_period(...)``
+    ``calculate_block_values(...)``
+    ``calculate_block_band(...)``
+
+This file owns block mathematics only: baseload, German-local peakload,
+offpeak, and peak/base spread.
+"""
 
 from __future__ import annotations
 
@@ -39,6 +50,11 @@ class BlockBand:
     has_band: bool
 
 
+# ---------------------------------------------------------------------------
+# Period helpers
+# ---------------------------------------------------------------------------
+
+
 def parse_utc_period(start: str, end: str) -> DeliveryPeriod:
     """Parse YYYY-MM-DD dates into a half-open UTC delivery period."""
 
@@ -73,6 +89,11 @@ def filter_delivery_period(table: pd.DataFrame, period: DeliveryPeriod) -> pd.Da
     timestamps = pd.to_datetime(table["timestamp_utc"], utc=True)
     mask = (timestamps >= period.start_utc) & (timestamps < period.end_utc)
     return table.loc[mask].copy()
+
+
+# ---------------------------------------------------------------------------
+# Block masks and aggregations
+# ---------------------------------------------------------------------------
 
 
 def peakload_mask(timestamps: pd.Series) -> pd.Series:
