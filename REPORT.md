@@ -240,10 +240,11 @@ required columns, so they never reach the model.
 ### 5.1 From feature store to model-ready table (`01_modelling_dataset.py`)
 
 `06_build_features.py` writes one wide feature store with every candidate column. Which of
-those columns a model is actually allowed to see is decided separately, in
-`pipeline_helpers/02_modelling/01_modelling_dataset.py`. Keeping selection out of the models
-means the leakage rules live in exactly one place, and every model is guaranteed to
-receive the same safe column set.
+those columns a model is actually allowed to see is decided separately by
+`pipeline_helpers/02_modelling/01_modelling_dataset.py`, using the editable policy file
+`pipeline_helpers/02_modelling/feature_sets.json`. Keeping feature selection out of the
+models means the leakage rules live in exactly one place, and every model is guaranteed
+to receive the same safe column set for the same forecast setup.
 
 Three **forecast setups** are supported:
 
@@ -265,7 +266,7 @@ The feature policy is selected centrally from the forecast setup and model famil
 - boosted trees / Theil-Sen use compact feature sets. For `hourly_day_ahead` this is
   load, solar, wind total, plus previous UTC daily price curves; for `hourly_period` it is
   only load, solar, and wind total.
-- for `period_average`, LEAR / RANSAC-LASSO use numeric period features except raw
+- for `period_average`, LEAR / RANSAC-LASSO use all numeric period features except raw
   calendar integers, while boosted trees / Theil-Sen use load mean, solar mean, wind mean,
   block dummies, `target_lag_1`, and `target_lag_2`.
 
@@ -280,8 +281,8 @@ The module is strict about its contract, and the errors it raises are part of th
   user no longer has to rerun the same model per block.
 
 The result is a small `ModellingDataset` (table, target column, selected feature
-columns, target, feature mode) that the validation engine consumes without ever needing
-to know how the columns were chosen.
+columns, forecast setup, and feature-policy label) that the validation engine consumes
+without ever needing to know how the columns were chosen.
 
 ---
 
@@ -381,11 +382,11 @@ configurations (loss × learning-rate / depth variants).
 ### 6.4 Robust linear check — Theil-Sen (`33_theil_sen_model.py`)
 
 The Theil-Sen model is included as a robustness experiment. It is a pooled robust
-linear regression fitted on the active feature set configured in `00_constants.py`.
-This makes it easy to test the very small fundamental set
-`{load_forecast_mw, solar_forecast_mw, wind_total_forecast_mw}` against richer
-feature sets. It is not the headline model because Theil-Sen scales poorly in high
-dimension and does not perform LASSO-style feature selection.
+linear regression fitted on the feature set selected by `feature_sets.json`. In testing
+it behaved best on compact, low-correlation feature sets: load, solar, wind total, and
+where relevant the previous UTC daily price curves or period target lags. It is not the
+headline model because Theil-Sen scales poorly in high dimension and does not perform
+LASSO-style feature selection.
 
 ### 6.5 Robust sparse check — RANSAC-LASSO (`34_ransac_lasso_model.py`)
 
@@ -487,24 +488,26 @@ uncertainty rather than to point forecasts.
 
 ## 10. Results, figures, and what they say
 
-The fully validated run is the headline LEAR model
-(`lear_model_lasso_raw__hourly_day_ahead`), LASSO, raw target, 35 folds:
+The validated model set covers the required baseline, regularised linear model,
+nonlinear boosted-tree model, robust linear checks, and direct period-average target.
+The most important runs are:
 
-| Metric | Value (€/MWh) |
-| --- | --- |
-| MAE | 17.30 |
-| RMSE | 25.56 |
-| Bias | +0.41 |
-| Top-decile MAE | 30.34 |
-| Bottom-decile MAE | 20.10 |
-| Scarcity MAE | 35.27 |
-| **P10–P90 band coverage** | **79.9%** |
+| Run | Forecast setup | MAE | RMSE | Bias | Band coverage |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `baseline_model__hourly_day_ahead` | hourly next-day | 26.64 | 39.53 | +0.03 | 79.9% |
+| `boosted_tree_model__hourly_day_ahead` | hourly next-day | 15.28 | 23.94 | +2.17 | 79.9% |
+| `ransac_lasso_model_raw__hourly_day_ahead` | hourly next-day | 15.58 | 24.22 | -0.96 | 79.9% |
+| `lear_model_elasticnet_raw__hourly_day_ahead` | hourly next-day | 16.23 | 26.35 | +1.75 | 79.9% |
+| `boosted_tree_model__hourly_period` | hourly period view | 28.30 | 40.14 | +16.06 | 79.9% |
+| `theil_sen_model_raw__hourly_period` | hourly period view | 29.85 | 39.57 | +17.42 | 79.9% |
+| `lear_model_lasso_raw__period_average__15d` | direct 15d average | 17.13 | 19.80 | +5.47 | 79.7% |
 
-The band coverage of 79.9% against an 80% target is essentially perfect calibration,
-which is a strong, concrete result to point at. The near-zero bias shows the model is
-not systematically long or short. The tail MAEs being larger than the headline MAE is
-exactly what theory predicts — spikes and troughs are harder — and is why the tail
-metrics are tracked separately rather than hidden inside the mean.
+The band coverage stays very close to the 80% target, which is the important calibration
+check for Task 3. The table also documents a useful modelling lesson: models using
+previous price curves are strongest for true next-day forecasting, while period views
+must remove those price dependencies unless the period is already partly known. For
+longer period views, compact fundamental models and direct period-average models become
+more honest even when their hourly MAE is worse.
 
 `pipeline_steps/03_run_forecast_view.py` writes the Task-3 forecast-view figures into
 the selected output folder:
@@ -513,7 +516,8 @@ the selected output folder:
   region over a recent window.
 - `fair_value_vs_benchmark.png` — forecast fair value versus benchmark by block.
 - `signal_by_block.png` — edge versus benchmark, coloured by direction.
-- `forecast_heatmap.png` — hourly forecast shape by date and local delivery hour.
+- `forecast_heatmap.png` — optional hourly forecast shape by date and local delivery hour
+  for hourly setups.
 
 These satisfy the "at least two figures" requirement and visually demonstrate the band
 calibration, block-level fair values, and trading signal.
@@ -536,11 +540,13 @@ band when band columns are present.
 
 ### 11.2 Where the forecast comes from
 
-`10_window_prediction.py` resolves the forecast for a requested period from one of three
-sources, in priority order: an existing period prediction, the existing out-of-sample
-validation predictions, or a freshly retrained rolling window. Reusing validation
-predictions where possible is what lets a historical period carry a real empirical
-band; a retrained forward period cannot, and falls back to the proxy below.
+`10_window_prediction.py` trains exactly one user-selected split: a training window
+immediately before the requested prediction window. It first reads validated
+hyperparameters from the matching model folder (`best_params.json`, `metadata.json`, or
+`validation_summary.csv`); if none exist, it prints a clear warning and falls back to the
+first grid row. The output is one concrete prediction package under `outputs/`, including
+`predictions.csv`, `metrics.csv`, `model.joblib`, and metadata describing the model,
+forecast setup, training dates, prediction dates, and parameter source.
 
 ### 11.3 The band-driven signal
 
@@ -590,16 +596,16 @@ also writes `curve_view_summary.csv`, `curve_view_report.md`, per-block reports 
 ## 12. AI-accelerated workflow
 
 Task 4 is implemented as the helper `pipeline_helpers/03_curve_translation/03_ai_commentary.py`
-and is called programmatically from `03_run_forecast_view.py` when requested. It reads a
-one-row `curve_view_summary.csv`, builds a constrained prompt that is forbidden from
+and is called programmatically from `03_run_forecast_view.py` when requested. It reads
+the computed curve-summary rows, builds a constrained prompt that is forbidden from
 inventing numbers (it may only use the computed values), calls the **OpenAI Responses
 API** with the key read from `OPENAI_API_KEY` (environment only), and writes
 `ai_commentary.md`. Every run logs the prompt, the output, and any failure as JSON under
 `ai_logs/`. If the API is unavailable or out of quota, a **deterministic fallback**
 writes a templated commentary from the same numbers, so the pipeline never breaks. The
-model name comes from `OPENAI_MODEL` (default
-`gpt-4.1-mini`). This meets the minimum AI requirements — called from code, prompts /
-outputs / failures logged, no committed secrets — and is intentionally kept minimal.
+model name comes from `OPENAI_MODEL` (default `gpt-4.1-mini`). This meets the minimum AI
+requirements — called from code, prompts / outputs / failures logged, no committed
+secrets — and is intentionally kept minimal.
 
 ---
 
@@ -624,7 +630,7 @@ Modelling helpers (`pipeline_helpers/02_modelling/`): `00_constants.py`, `02_met
 `01_modelling_dataset.py`.
 
 Curve-translation helpers (`pipeline_helpers/03_curve_translation/`): `00_constants.py`,
-`01_forecast_blocks.py`, `02_curve_view.py`.
+`01_forecast_blocks.py`, `02_curve_view.py`, `03_ai_commentary.py`.
 
 The shape of the repository mirrors the red line: `entsoe_data` answers "what do we
 know and when", `modelling` answers "what is the price given that knowledge, and how
@@ -664,12 +670,17 @@ inside the delivery month.
 
 **Honest limitations.**
 
-- Only the LEAR model is fully validated; the boosted-tree model is wired but its 35-
-  fold run was skipped, so it carries no headline number yet.
+- The period-oriented hourly setup assumes load/wind/solar forecasts are available over
+  the requested future window. For the proof of concept this is acceptable, but a
+  production curve model should add a separate fundamental-forecast layer for horizons
+  beyond the next day.
 - The actual-input oracle model from Section 3 is argued for but not implemented; the
   oracle-vs-tradable gap is therefore described, not yet measured.
-- The benchmark is a realised-price proxy, not a traded forward curve.
+- The benchmark is a realised-price proxy, not a traded forward curve; a manual traded
+  curve price can be supplied when available.
 - Fundamentals are restricted to load/solar/wind by design — no fuel, carbon, or flows.
+- Training is still mostly sequential; parallelising validation across parameter grids,
+  folds, and hours is the highest-value engineering improvement.
 
 **Future work, with its sources.** Build separate fundamental forecasts (Maciejowska,
 Nitka & Weron); add probabilistic fundamental forecasts (Uniejewski & Ziel); run the

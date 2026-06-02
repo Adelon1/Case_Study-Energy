@@ -8,27 +8,28 @@ signal, desk action, and invalidation logic. A single programmatic LLM step gene
 grounded commentary.
 
 The default workflow is a **daily rolling day-ahead forecast**: each delivery day is
-forecast from information known *before* the auction (forecast load/wind/solar, recent
-daily price-curve shapes, calendar). It is not a one-shot
-forecast of future realised prices.
+forecast from information known before the auction (forecast load/wind/solar, recent
+daily price-curve shapes, calendar). It is not a one-shot forecast of future realised
+prices.
 
-The same code also supports a second target on request — a **period-average forecast**,
-where baseload, peakload, and offpeak values are predicted for a whole delivery period
-of length `|P|` days instead of 24 hourly values. The targets are selected inside the
-interactive validation prompt.
+The same code also supports period-oriented setups: `hourly_period` predicts hourly
+prices over a longer window with price-history features removed, while `period_average`
+predicts baseload, peakload, and offpeak averages for a whole delivery period. The
+setup is selected inside the interactive validation and forecast-view prompts.
 
 > **Documentation**
 > - [`TASK.md`](TASK.md) — the original case-study brief.
-> - [`REPORT.md`](REPORT.md) — full report: design decisions, literature, code walk-through, results.
+> - [`submission_report.tex`](submission_report.tex) / `submission_report.pdf` — submission report.
+> - [`REPORT.md`](REPORT.md) — long-form internal report: design decisions, literature, code walk-through, results.
 
 ## Features
 
 - ENTSO-E ingestion with 01_raw → 02_interim → 03_processed data layout and a generated QA report.
-- Correct UTC/DST handling (UTC join key, local German calendar features, 24-column daily lags across 23/25-hour days).
+- Correct UTC/DST handling (UTC join key, German-local calendar features, UTC daily lag curves across 23/25-hour local days).
 - Leakage-safe feature engineering with previous UTC daily price curves and local German calendar features.
-- Five models behind one interface: seasonal-lag baseline, **LEAR-style 24-hour regularised ARX** (headline), histogram gradient boosting, Theil-Sen, and RANSAC-LASSO robust linear checks.
-- Rolling-origin validation (24m train / 1m test / 1m step, 35 folds) with MAE, RMSE, bias, and tail/scarcity metrics.
-- Empirical **P10–P90 residual bands** per hour (validation coverage ≈ 80%).
+- Five models behind one interface: row-lag baseline, **LEAR-style 24-hour regularised ARX**, histogram gradient boosting, Theil-Sen, and RANSAC-LASSO robust linear checks.
+- Rolling-origin validation (24m train / 1m test / 1m step) with MAE, RMSE, bias, and tail/scarcity metrics.
+- Empirical **P10-P90 residual bands** from validation residuals (coverage ≈ 80%).
 - Band-driven curve signal with benchmark comparison, desk action, and invalidation rules.
 - One LLM commentary step (OpenAI Responses API) with prompt/output/failure logging and a deterministic fallback.
 
@@ -76,7 +77,7 @@ All runnable scripts are interactive by default; run them without command-line o
 | --- | --- | --- |
 | `hourly_day_ahead` | Predict one delivery day as 24 hourly prices. | Recommended for next-day DA forecasting. |
 | `hourly_period` | Predict hourly prices over a longer period without price-lag features. | Use for multi-day period views from fundamentals. |
-| `period_average` | Predict baseload, peakload, and offpeak averages for each delivery period. | Use for direct multi-block period forecasts. |
+| `period_average` | Predict baseload, peakload, and offpeak averages for each delivery period. | Use for direct multi-block period forecasts; all three blocks are built together. |
 
 ### Main Files
 
@@ -87,7 +88,7 @@ All runnable scripts are interactive by default; run them without command-line o
 | `pipeline_steps/03_run_forecast_view.py` | Main Task-3 forecast-to-curve workflow. |
 | `pipeline_helpers/02_modelling/feature_sets.json` | User-editable mapping from model/setup to feature bundles. |
 | `.env` | User-editable secrets and API model settings. |
-| `REPORT.md` | Final written explanation of methodology and results. |
+| `REPORT.md` | Long-form explanation of methodology, implementation details, and results. |
 
 ### What A Normal User May Change
 
@@ -109,7 +110,7 @@ All runnable scripts are interactive by default; run them without command-line o
 | `pipeline_helpers/02_modelling/09_validation.py` | Validation engine is shared by every model. |
 | `pipeline_helpers/02_modelling/10_window_prediction.py` | Window prediction is shared by Task-3 workflows. |
 | `pipeline_helpers/03_curve_translation/*.py` | Curve translation logic should change only when the trading methodology changes. |
-| `data/`, `models/`, `outputs/` | Generated artifacts; delete/regenerate them rather than editing by hand. |
+| `data/02_interim`, `data/03_processed`, `models/`, `outputs/` | Submission artifacts; inspect them, but regenerate rather than editing by hand. |
 
 ### Model Names
 
@@ -134,7 +135,7 @@ pipeline_helpers/
   02_modelling/                     # models, validation, metrics, prediction bands
   03_curve_translation/             # blocks, benchmarks, signal, AI commentary helper
 
-data/        01_raw/ 02_interim/ 03_processed/   (generated; not tracked)
+data/        01_raw/ 02_interim/ 03_processed/   (raw is ignored; interim/processed are submission artifacts)
 models/      validation runs and saved artifacts per model
 outputs/     human-facing forecast views, plots, reports, and commentary
 ```
@@ -153,16 +154,24 @@ outputs/     human-facing forecast views, plots, reports, and commentary
 | `outputs/<dataset>/<period>/<model_setup>/predictions.csv` | one chosen train/predict window |
 | `outputs/<dataset>/<period>/<model_setup>/curve_view_summary.csv` | fair value, benchmark, edge, signal |
 | `outputs/<dataset>/<period>/<model_setup>/curve_view_report.md` | prompt-curve fair-value report |
-| `outputs/<dataset>/<period>/<model_setup>/plots/*.png` | forecast, band, block, signal, and heatmap figures |
+| `outputs/<dataset>/<period>/<model_setup>/plots/*.png` | forecast/band, fair-value, signal, and optional heatmap figures |
 | `outputs/<dataset>/<period>/<model_setup>/curve_translation/<block>/ai_commentary.md` | optional LLM or fallback commentary |
 
 ## Headline result
 
-LEAR (LASSO, raw target), 35 monthly folds, Feb-2023 → Dec-2025:
+Selected validation results on `germany_modelling_2021_2026`:
 
-| MAE | RMSE | Bias | Top-decile MAE | P10–P90 band coverage |
-| --- | --- | --- | --- | --- |
-| 17.30 | 25.56 | +0.41 | 30.34 | 79.9% |
+| Run | MAE | RMSE | Bias | P10-P90 coverage |
+| --- | ---: | ---: | ---: | ---: |
+| `boosted_tree_model__hourly_day_ahead` | 15.28 | 23.94 | +2.17 | 79.9% |
+| `ransac_lasso_model_raw__hourly_day_ahead` | 15.58 | 24.22 | -0.96 | 79.9% |
+| `lear_model_elasticnet_raw__hourly_day_ahead` | 16.23 | 26.35 | +1.75 | 79.9% |
+| `boosted_tree_model__hourly_period` | 28.30 | 40.14 | +16.06 | 79.9% |
+| `theil_sen_model_raw__hourly_period` | 29.85 | 39.57 | +17.42 | 79.9% |
+| `baseline_model__hourly_period` | 61.86 | 74.83 | +42.33 | 79.9% |
+| `lear_model_lasso_raw__period_average__15d` | 17.13 | 19.80 | +5.47 | 79.7% |
+| `baseline_model__period_average__15d` | 18.16 | 21.25 | +0.40 | 79.7% |
+| `baseline_model__hourly_day_ahead` | 26.64 | 39.53 | +0.03 | 79.9% |
 
 (€/MWh; coverage target is 80%.)
 
@@ -171,6 +180,7 @@ LEAR (LASSO, raw target), 35 monthly folds, Feb-2023 → Dec-2025:
 - **UTC** is the canonical timestamp and join key; German local time is used only for calendar features and peak/offpeak blocks.
 - Only **load, solar, and wind** fundamentals are used — no fuel, carbon, or flows (by design).
 - The benchmark is a realised-price **proxy**, not a traded forward curve; a manual curve price can be supplied.
+- `data/01_raw/` is ignored because raw API downloads are reproducible and bulky; processed QA/results artifacts are intended for submission.
 - Secrets are read from environment variables only; `.env` is never committed.
 
 ## License / data
