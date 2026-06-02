@@ -1,0 +1,5 @@
+model;l2_regularization;learning_rate;loss;max_iter;max_leaf_nodes;min_samples_leaf;mae;rmse;bias;top_decile_mae;bottom_decile_mae;scarcity_price_mae;relative_mae_vs_baseline
+boosted_tree_model;0.0;0.05;absolute_error;200;31;50;28.3;40.14;16.06;52.99;19.66;59.41;0.46
+boosted_tree_model;0.0;0.03;absolute_error;200;63;100;28.55;40.69;16.27;53.85;20.24;60.23;0.46
+boosted_tree_model;1.0;0.05;absolute_error;200;63;50;29.11;41.83;16.63;55.54;19.43;63.25;0.47
+boosted_tree_model;0.0;0.05;squared_error;200;31;50;40.69;54.48;29.61;73.59;21.02;79.83;0.66

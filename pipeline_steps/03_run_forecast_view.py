@@ -44,7 +44,7 @@ build_model_options = window_prediction.build_model_options
 model_folder_for = window_prediction.model_folder_for
 train_and_predict_window = window_prediction.train_and_predict_window
 add_months = window_prediction.add_months
-parse_utc_period = forecast_blocks.parse_utc_period
+DeliveryPeriod = forecast_blocks.DeliveryPeriod
 TimeWindow = window_prediction.TimeWindow
 build_curve_view = curve_view.build_curve_view
 write_curve_view_outputs = curve_view.write_curve_view_outputs
@@ -54,6 +54,7 @@ write_ai_commentary = ai_commentary.generate_commentary
 
 
 DEFAULT_FEATURES = "data/03_processed/germany_modelling_2021_2026/germany_model_features.csv"
+MARKET_TIMEZONE = "Europe/Berlin"
 
 
 def parse_command_line_arguments() -> SimpleNamespace:
@@ -145,16 +146,18 @@ def apply_interactive_settings(args: SimpleNamespace) -> SimpleNamespace:
     return args
 
 
-def parse_delivery_date(date_text: str) -> str:
-    """Parse a DD-MM-YYYY date into the YYYY-MM-DD format used by UTC periods."""
-
-    return pd.to_datetime(date_text, format="%d-%m-%Y").strftime("%Y-%m-%d")
-
-
 def parse_delivery_timestamp(date_text: str) -> pd.Timestamp:
-    """Parse a DD-MM-YYYY delivery boundary as a UTC timestamp."""
+    """Parse a DD-MM-YYYY German delivery boundary as a UTC timestamp.
 
-    return pd.Timestamp(parse_delivery_date(date_text), tz="UTC")
+    User-facing dates are delivery dates in German market time, not UTC dates.
+    In summer, for example, 03-06-2026 starts at 2026-06-02 22:00 UTC.
+    """
+
+    local_midnight = pd.Timestamp(
+        pd.to_datetime(date_text, format="%d-%m-%Y"),
+        tz=MARKET_TIMEZONE,
+    )
+    return local_midnight.tz_convert("UTC")
 
 
 def next_delivery_date(date_text: str) -> str:
@@ -181,13 +184,13 @@ def selected_curve_blocks(forecast_setup: str, blocks: str | list[str]) -> list[
 def plot_context_label(model_label: str, prediction_window: TimeWindow) -> str:
     """Return a compact label with model and delivery period for plot titles."""
 
-    period_start = prediction_window.test_begin.strftime("%Y-%m-%d")
-    period_end = prediction_window.test_end.strftime("%Y-%m-%d")
-    if period_start == period_end:
-        period_text = period_start
+    local_start = prediction_window.test_begin.tz_convert(MARKET_TIMEZONE)
+    local_end_inclusive = prediction_window.test_end.tz_convert(MARKET_TIMEZONE) - pd.Timedelta(seconds=1)
+    if local_start.date() == local_end_inclusive.date():
+        period_text = local_start.strftime("%Y-%m-%d")
     else:
-        period_text = f"{period_start} to {period_end}"
-    return f"Model: {model_label} | Period: {period_text}"
+        period_text = f"{local_start:%Y-%m-%d} to {local_end_inclusive:%Y-%m-%d}"
+    return f"Model: {model_label} | Delivery: {period_text} ({MARKET_TIMEZONE})"
 
 
 def period_folder_slug(start_text: str, end_text: str) -> str:
@@ -231,7 +234,8 @@ def plot_forecast_actual_band(
     rows = predictions.copy()
     rows["timestamp_utc"] = pd.to_datetime(rows["timestamp_utc"], utc=True)
     rows = rows.sort_values("timestamp_utc")
-    plot_time = rows["timestamp_utc"].dt.tz_convert(None)
+    local_time = rows["timestamp_utc"].dt.tz_convert(MARKET_TIMEZONE)
+    plot_time = local_time.dt.tz_localize(None)
 
     fig, ax = plt.subplots(figsize=(14, 6))
     ax.plot(plot_time, rows["y_pred"], label="Predicted", linewidth=1.6)
@@ -245,16 +249,17 @@ def plot_forecast_actual_band(
             alpha=0.18,
             label="P10-P90 band",
         )
-    period_start = rows["timestamp_utc"].min()
+    period_start = local_time.min()
+    period_end = local_time.max()
     period_label = period_start.strftime("%Y-%m-%d")
-    if rows["timestamp_utc"].max().date() != period_start.date():
-        period_label = f"{period_label} to {rows['timestamp_utc'].max().strftime('%Y-%m-%d')}"
+    if period_end.date() != period_start.date():
+        period_label = f"{period_label} to {period_end.strftime('%Y-%m-%d')}"
     ax.set_title(f"Forecast vs Actual Price ({period_label})\n{context_label}")
-    ax.set_xlabel("Prediction time")
+    ax.set_xlabel(f"Prediction time ({MARKET_TIMEZONE})")
     ax.set_ylabel("EUR/MWh")
     ax.grid(True, alpha=0.25)
     ax.legend()
-    time_span = rows["timestamp_utc"].max() - rows["timestamp_utc"].min()
+    time_span = local_time.max() - local_time.min()
     if time_span <= pd.Timedelta(days=1):
         ax.xaxis.set_major_locator(mdates.HourLocator(interval=3))
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
@@ -491,9 +496,9 @@ def main() -> None:
             predictions=predictions,
             feature_table=feature_table,
             metrics_path=result.metrics_path,
-            period=parse_utc_period(
-                prediction_window.test_begin.strftime("%Y-%m-%d"),
-                prediction_window.test_end.strftime("%Y-%m-%d"),
+            period=DeliveryPeriod(
+                start_utc=prediction_window.test_begin,
+                end_utc=prediction_window.test_end,
             ),
             block=block,
             benchmark_method=args.benchmark,

@@ -1,0 +1,5 @@
+{
+  "alpha": 7.0,
+  "regularization": "lasso",
+  "target_transform": "raw"
+}

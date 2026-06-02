@@ -8,20 +8,18 @@
 __pycache__/
 *.py[cod]
 
-# Generated project artifacts
-data/01_raw/*
-data/02_interim/*
-data/03_processed/*
-models/
-outputs/
+# Runtime logs
 *.log
 
-# Keep data folder placeholders
+# Raw API downloads are reproducible and bulky
+data/01_raw/*
 !data/01_raw/.gitkeep
-!data/02_interim/.gitkeep
-!data/03_processed/.gitkeep
 
-# latex
-*.gz
-*.tex
-*.pdf
+# LaTeX build byproducts
+*.aux
+*.fdb_latexmk
+*.fls
+*.out
+*.synctex.gz
+*.toc
+build/

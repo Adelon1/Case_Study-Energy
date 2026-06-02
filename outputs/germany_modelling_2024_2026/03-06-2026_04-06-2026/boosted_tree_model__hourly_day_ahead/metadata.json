@@ -1,0 +1,35 @@
+{
+  "artifacts": {
+    "metrics": "outputs/germany_modelling_2024_2026/03-06-2026_04-06-2026/boosted_tree_model__hourly_day_ahead/metrics.csv",
+    "model": "outputs/germany_modelling_2024_2026/03-06-2026_04-06-2026/boosted_tree_model__hourly_day_ahead/model.joblib",
+    "prediction_metadata": "outputs/germany_modelling_2024_2026/03-06-2026_04-06-2026/boosted_tree_model__hourly_day_ahead/metadata.json",
+    "predictions": "outputs/germany_modelling_2024_2026/03-06-2026_04-06-2026/boosted_tree_model__hourly_day_ahead/predictions.csv"
+  },
+  "benchmark": "trailing_average",
+  "blocks": [
+    "baseload",
+    "peakload",
+    "offpeak"
+  ],
+  "created_at_utc": "2026-06-02T23:23:28.135674+00:00",
+  "curve_price": null,
+  "curve_summary": "outputs/germany_modelling_2024_2026/03-06-2026_04-06-2026/boosted_tree_model__hourly_day_ahead/curve_view_summary.csv",
+  "dataset": "germany_modelling_2024_2026",
+  "delivery_date": "03-06-2026",
+  "forecast_setup": "hourly_day_ahead",
+  "model": "boosted_tree_model",
+  "model_folder": "models/germany_modelling_2024_2026/boosted_tree_model__hourly_day_ahead",
+  "period_days": 1,
+  "plots": [
+    "outputs/germany_modelling_2024_2026/03-06-2026_04-06-2026/boosted_tree_model__hourly_day_ahead/plots/forecast_actual_band.png",
+    "outputs/germany_modelling_2024_2026/03-06-2026_04-06-2026/boosted_tree_model__hourly_day_ahead/plots/fair_value_vs_benchmark.png",
+    "outputs/germany_modelling_2024_2026/03-06-2026_04-06-2026/boosted_tree_model__hourly_day_ahead/plots/signal_by_block.png",
+    "outputs/germany_modelling_2024_2026/03-06-2026_04-06-2026/boosted_tree_model__hourly_day_ahead/plots/forecast_heatmap.png"
+  ],
+  "prediction_begin": "2026-06-02 22:00:00+00:00",
+  "prediction_end": "2026-06-03 22:00:00+00:00",
+  "train_begin": "2024-06-02 22:00:00+00:00",
+  "train_end": "2026-06-02 22:00:00+00:00",
+  "training_months": 24,
+  "window_mode": "prediction_window_with_training_months"
+}

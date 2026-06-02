@@ -1,0 +1,11 @@
+model;selection;alpha;regularization;target_transform;mae;rmse;bias;top_decile_mae;bottom_decile_mae;scarcity_price_mae
+lear_model;per_hour_validated;;;;16.5;26.69;0.96;31.18;20.8;38.59
+lear_model;;5.0;lasso;raw;16.65;25.14;0.71;31.02;19.03;38.16
+lear_model;;7.0;lasso;raw;16.77;25.32;1.62;31.42;20.12;39.18
+lear_model;;3.0;lasso;raw;16.77;25.13;-0.06;30.56;18.58;36.81
+lear_model;;1.0;lasso;raw;17.22;25.43;-0.41;30.23;19.22;34.97
+lear_model;;10.0;lasso;raw;17.28;25.9;3.01;32.29;22.36;40.77
+lear_model;;0.3;lasso;raw;17.42;25.62;-0.35;30.2;19.49;34.69
+lear_model;;0.1;lasso;raw;17.83;26.25;-0.27;30.81;19.85;35.36
+lear_model;;0.05;lasso;raw;18.35;26.9;-0.14;31.43;20.41;35.96
+lear_model;;0.03;lasso;raw;18.74;27.39;-0.08;31.85;20.8;36.34

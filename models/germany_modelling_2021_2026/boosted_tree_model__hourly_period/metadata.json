@@ -1,0 +1,62 @@
+{
+  "artifact_note": "For another requested delivery period, retrain on that period's rolling training window.",
+  "best_params": {
+    "l2_regularization": 0.0,
+    "learning_rate": 0.05,
+    "loss": "absolute_error",
+    "max_iter": 200,
+    "max_leaf_nodes": 31,
+    "min_samples_leaf": 50
+  },
+  "best_validation_row": {
+    "bias": 16.060590275579088,
+    "bottom_decile_mae": 19.662735163421228,
+    "mae": 28.298230352621754,
+    "model": "boosted_tree_model",
+    "params": "{\"l2_regularization\": 0.0, \"learning_rate\": 0.05, \"loss\": \"absolute_error\", \"max_iter\": 200, \"max_leaf_nodes\": 31, \"min_samples_leaf\": 50}",
+    "relative_mae_vs_baseline": 0.4574560354449039,
+    "rmse": 40.13907221447038,
+    "scarcity_price_mae": 59.40759767331215,
+    "top_decile_mae": 52.99474370112996
+  },
+  "block": "baseload",
+  "created_at_utc": "2026-06-02T20:18:57.206516+00:00",
+  "feature_columns": [
+    "load_forecast_mw",
+    "solar_forecast_mw",
+    "wind_total_forecast_mw"
+  ],
+  "feature_csv": "data/03_processed/germany_modelling_2021_2026/germany_model_features.csv",
+  "feature_policy": "core_hourly_fundamentals",
+  "forecast_setup": "hourly_period",
+  "model": "boosted_tree_model",
+  "model_options": {
+    "target_transform": "raw"
+  },
+  "period_days": 1,
+  "predictions_file": {
+    "band_coverage": 0.7990610328638498,
+    "band_quantiles": [
+      0.1,
+      0.9
+    ],
+    "meaning": "out-of-sample rolling-validation predictions for the selected params across all folds",
+    "path": "models/germany_modelling_2021_2026/boosted_tree_model__hourly_period/predictions.csv"
+  },
+  "saved_model": {
+    "meaning": "model trained on the last validation fold using best rolling-validation params",
+    "test_begin": "2025-12-01 00:00:00+00:00",
+    "test_end": "2026-01-01 00:00:00+00:00",
+    "train_begin": "2023-12-01 00:00:00+00:00",
+    "train_end": "2025-12-01 00:00:00+00:00"
+  },
+  "selection_metric": "mae",
+  "target_column": "day_ahead_price_eur_per_mwh",
+  "training_diagnostics": {},
+  "validation_constants": {
+    "step_months": 1,
+    "test_months": 1,
+    "train_months": 24
+  },
+  "validation_method": "rolling fixed-window validation"
+}

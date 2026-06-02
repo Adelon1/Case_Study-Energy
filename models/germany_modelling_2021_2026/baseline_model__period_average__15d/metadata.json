@@ -1,0 +1,58 @@
+{
+  "artifact_note": "For another requested delivery period, retrain on that period's rolling training window.",
+  "best_params": {
+    "lag_rows": 1
+  },
+  "best_validation_row": {
+    "bias": 0.4019219331744081,
+    "bottom_decile_mae": 17.259271943017637,
+    "mae": 18.16457552577395,
+    "model": "baseline_model",
+    "params": "{\"lag_rows\": 1}",
+    "rmse": 21.25103278161294,
+    "scarcity_price_mae": 69.21603787878789,
+    "top_decile_mae": 25.609579803452483
+  },
+  "block": "all",
+  "created_at_utc": "2026-06-02T18:18:15.147467+00:00",
+  "feature_columns": [
+    "target_lag_1",
+    "target_lag_2",
+    "target_lag_4",
+    "target_lag_7",
+    "target_lag_12"
+  ],
+  "feature_csv": "data/03_processed/germany_modelling_2021_2026/germany_model_features.csv",
+  "feature_policy": "period_target_lags",
+  "forecast_setup": "period_average",
+  "model": "baseline_model",
+  "model_options": {
+    "target_transform": "raw"
+  },
+  "period_days": 15,
+  "predictions_file": {
+    "band_coverage": 0.7971014492753623,
+    "band_quantiles": [
+      0.1,
+      0.9
+    ],
+    "meaning": "out-of-sample rolling-validation predictions for the selected params across all folds",
+    "path": "models/germany_modelling_2021_2026/baseline_model__period_average__15d/predictions.csv"
+  },
+  "saved_model": {
+    "meaning": "model trained on the last validation fold using best rolling-validation params",
+    "test_begin": "2025-11-01 00:00:00+00:00",
+    "test_end": "2025-12-01 00:00:00+00:00",
+    "train_begin": "2023-11-01 00:00:00+00:00",
+    "train_end": "2025-11-01 00:00:00+00:00"
+  },
+  "selection_metric": "mae",
+  "target_column": "period_average_price_eur_per_mwh",
+  "training_diagnostics": {},
+  "validation_constants": {
+    "step_months": 1,
+    "test_months": 1,
+    "train_months": 24
+  },
+  "validation_method": "rolling fixed-window validation"
+}

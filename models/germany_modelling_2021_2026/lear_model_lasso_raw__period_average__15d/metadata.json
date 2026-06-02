@@ -1,0 +1,93 @@
+{
+  "artifact_note": "For another requested delivery period, retrain on that period's rolling training window.",
+  "best_params": {
+    "alpha": 7.0,
+    "regularization": "lasso",
+    "target_transform": "raw"
+  },
+  "best_validation_row": {
+    "bias": 5.466732105232649,
+    "bottom_decile_mae": 15.79580856205971,
+    "mae": 17.126728934905664,
+    "model": "lear_model",
+    "params": "{\"alpha\": 7.0, \"regularization\": \"lasso\", \"target_transform\": \"raw\"}",
+    "relative_mae_vs_baseline": 0.9431018135961269,
+    "rmse": 19.79551826057095,
+    "scarcity_price_mae": 39.65258629063157,
+    "top_decile_mae": 25.659256023116953
+  },
+  "block": "all",
+  "created_at_utc": "2026-06-02T20:38:38.327990+00:00",
+  "feature_columns": [
+    "period_n_hours",
+    "load_forecast_mw_mean",
+    "load_forecast_mw_min",
+    "load_forecast_mw_max",
+    "load_forecast_mw_std",
+    "solar_forecast_mw_mean",
+    "solar_forecast_mw_min",
+    "solar_forecast_mw_max",
+    "solar_forecast_mw_std",
+    "wind_total_forecast_mw_mean",
+    "wind_total_forecast_mw_min",
+    "wind_total_forecast_mw_max",
+    "wind_total_forecast_mw_std",
+    "renewable_total_forecast_mw_mean",
+    "renewable_total_forecast_mw_min",
+    "renewable_total_forecast_mw_max",
+    "renewable_total_forecast_mw_std",
+    "residual_load_forecast_mw_mean",
+    "residual_load_forecast_mw_min",
+    "residual_load_forecast_mw_max",
+    "residual_load_forecast_mw_std",
+    "block_peakload",
+    "block_offpeak",
+    "target_lag_1",
+    "target_lag_2",
+    "target_lag_4",
+    "target_lag_7",
+    "target_lag_12",
+    "period_month_sin",
+    "period_month_cos",
+    "period_start_weekday_sin",
+    "period_start_weekday_cos"
+  ],
+  "feature_csv": "data/03_processed/germany_modelling_2021_2026/germany_model_features.csv",
+  "feature_policy": "all_numeric_period_without_raw_calendar",
+  "forecast_setup": "period_average",
+  "model": "lear_model",
+  "model_options": {
+    "regularization": "lasso",
+    "target_transform": "raw"
+  },
+  "period_days": 15,
+  "predictions_file": {
+    "band_coverage": 0.7971014492753623,
+    "band_quantiles": [
+      0.1,
+      0.9
+    ],
+    "meaning": "out-of-sample rolling-validation predictions for the selected params across all folds",
+    "path": "models/germany_modelling_2021_2026/lear_model_lasso_raw__period_average__15d/predictions.csv"
+  },
+  "saved_model": {
+    "meaning": "model trained on the last validation fold using best rolling-validation params",
+    "test_begin": "2025-11-01 00:00:00+00:00",
+    "test_end": "2025-12-01 00:00:00+00:00",
+    "train_begin": "2023-11-01 00:00:00+00:00",
+    "train_end": "2025-11-01 00:00:00+00:00"
+  },
+  "selection_metric": "mae",
+  "target_column": "period_average_price_eur_per_mwh",
+  "training_diagnostics": {
+    "alpha_by_hour": {
+      "-1": 7.0
+    }
+  },
+  "validation_constants": {
+    "step_months": 1,
+    "test_months": 1,
+    "train_months": 24
+  },
+  "validation_method": "rolling fixed-window validation"
+}
