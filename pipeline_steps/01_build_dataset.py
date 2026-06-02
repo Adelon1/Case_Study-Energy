@@ -76,17 +76,29 @@ def ask_choice(prompt: str, choices: list[str], default: str) -> str:
 
 
 def ask_dataset_list(default: list[str]) -> list[str]:
-    """Ask for a whitespace-separated dataset list and validate the names."""
+    """Ask for a whitespace-separated dataset list and validate the names.
+
+    The special answer ``all`` expands to every dataset defined in the ENTSO-E
+    constants file. This keeps the common modelling run pleasantly boring.
+    """
 
     choices = sorted(constants.ENTSOE_DATASETS)
-    default_text = " ".join(default)
+    default_text = "all" if sorted(default) == choices else " ".join(default)
     print("Available datasets:")
+    print("  - all")
     for dataset in choices:
         print(f"  - {dataset}")
 
     while True:
         answer = ask("Datasets separated by spaces", default_text)
+        if answer == "all":
+            return choices
         datasets = answer.split()
+        if "all" in datasets:
+            if len(datasets) == 1:
+                return choices
+            print("Use either 'all' by itself or list dataset names explicitly.")
+            continue
         invalid = [dataset for dataset in datasets if dataset not in constants.ENTSOE_DATASETS]
         if datasets and not invalid:
             return datasets
