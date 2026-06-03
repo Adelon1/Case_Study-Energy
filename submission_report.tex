@@ -64,7 +64,7 @@ Feature selection follows the same logic. LEAR and RANSAC-LASSO can use broad re
 \subsection*{4. Validation and Model Evidence}
 Validation uses rolling-origin splits: train on the previous 24 months, test the next month, then step forward one month. This produces 35 monthly folds from February 2023 through December 2025. Random K-fold validation would mix future and past regimes and is therefore not appropriate for electricity prices. The rolling design also mirrors live operation: retrain regularly, forecast the next window, score out-of-sample, move forward.
 
-The baseline is deliberately meaningful: lag/mean behaviour depending on the target. It is not a straw man. The improved models are a LEAR-style regularised linear model, boosted trees, Theil-Sen, and RANSAC-LASSO. Metrics are kept focused: MAE, RMSE, bias, top-decile MAE, bottom-decile MAE, and scarcity-price MAE. MAE selects the model; tail metrics prevent a model from winning while failing exactly in stress hours.
+The baseline is deliberately meaningful, not a straw man. For hourly targets it uses row lags of the target itself, so the candidates correspond to same-hour yesterday, two days ago, and last week. For period-average targets, one row is already a full period/block observation, so the baseline uses previous period rows such as one, two, four, seven, or twelve periods back. This makes the baseline adapt to the target definition without learning any fitted coefficients. The improved models are a LEAR-style regularised linear model, boosted trees, Theil-Sen, and RANSAC-LASSO. Metrics are kept focused: MAE, RMSE, bias, top-decile MAE, bottom-decile MAE, and scarcity-price MAE. MAE selects the model; tail metrics prevent a model from winning while failing exactly in stress hours.
 
 \begin{table}[h]
 \centering
@@ -88,9 +88,10 @@ Period average, 15d & LEAR LASSO & \textbf{17.13} & \textbf{19.80} & +5.47 & 25.
 \bottomrule
 \end{tabular}
 \caption{Selected rolling-validation results. Errors are in EUR/MWh. rMAE is MAE divided by the matching baseline MAE.}
+\label{tab:validation-results}
 \end{table}
 
-The table has a clear story. For the true day-ahead task, every serious model beats the baseline by a large margin; the best boosted-tree run reaches 15.28 EUR/MWh MAE, about 43\% better than the baseline. LEAR and RANSAC-LASSO are close, which is reassuring because they come from different modelling assumptions. The longer-period hourly task is harder because unsafe price lags are removed, but the boosted tree and Theil-Sen still cut the baseline error by more than half. Direct 15-day period averages are closest to baseline: this is not a failure, but a statistical warning. Aggregating 15 days into one row per block gives far fewer samples, so I treat period-average modelling as a curve-relevant complement rather than the main evidence.
+As shown in Table~\ref{tab:validation-results}, the true day-ahead task is where the models are strongest: every serious model beats the baseline by a large margin, and the best boosted-tree run reaches 15.28 EUR/MWh MAE, about 43\% better than the baseline. LEAR and RANSAC-LASSO are close, which is reassuring because they come from different modelling assumptions. The longer-period hourly task is harder because unsafe price lags are removed, but the boosted tree and Theil-Sen still cut the baseline error by more than half. Direct 15-day period averages are closest to baseline: this is not a failure, but a statistical warning. Aggregating 15 days into one row per block gives far fewer samples, so I treat period-average modelling as a curve-relevant complement rather than the main evidence.
 
 \subsection*{5. From Forecast to Curve View}
 The curve translation is intentionally mechanical. Once hourly prices are predicted, baseload is the average over all hours, peakload is the German local weekday 08:00--20:00 average, and offpeak is the remaining hours. For direct period-average runs, those three block values are predicted directly. This is the bridge from day-ahead price modelling to prompt-curve language: the model does not output a vague ``price opinion'', it outputs block fair values.
@@ -101,11 +102,14 @@ The signal is band-driven, not point-forecast-driven. The model first creates an
 
 The invalidation logic is practical: resize or close the view if updated load/wind/solar forecasts move residual load materially, if outages or flows change the supply stack, if the model's recent error rises above validation error, or if executable market prices differ materially from the benchmark. In other words, the curve view is not a blind recommendation; it is a structured statement of model edge under known assumptions.
 
+Figures~\ref{fig:day-ahead-view} and~\ref{fig:period-view} show the two output styles that the workflow produces: a one-day-ahead hourly forecast with its uncertainty band, and a longer-period curve view where the same forecasts are translated into block-level signals.
+
 \begin{figure}[h]
 \centering
 \includegraphics[width=0.47\linewidth]{outputs/germany_modelling_2021_2026/01-12-2025_02-12-2025/lear_model_lasso_raw__hourly_day_ahead/plots/forecast_actual_band.png}
 \includegraphics[width=0.47\linewidth]{outputs/germany_modelling_2021_2026/01-12-2025_02-12-2025/lear_model_lasso_raw__hourly_day_ahead/plots/fair_value_vs_benchmark.png}
 \caption{One-day-ahead LEAR forecast band and block fair-value comparison generated by the forecast-view workflow.}
+\label{fig:day-ahead-view}
 \end{figure}
 
 \begin{figure}[h]
@@ -113,13 +117,14 @@ The invalidation logic is practical: resize or close the view if updated load/wi
 \includegraphics[width=0.47\linewidth]{outputs/germany_modelling_2021_2026/01-11-2025_01-12-2025/boosted_tree_model__hourly_period/plots/forecast_actual_band.png}
 \includegraphics[width=0.47\linewidth]{outputs/germany_modelling_2021_2026/01-11-2025_01-12-2025/boosted_tree_model__hourly_period/plots/signal_by_block.png}
 \caption{Longer-period boosted-tree prediction band and block signal view for the November 2025 delivery window.}
+\label{fig:period-view}
 \end{figure}
 
 \subsection*{6. Programmatic AI Component}
 The AI step is deliberately narrow and auditable. It does not invent market analysis and it does not call a chat tool manually. It reads the computed curve-view summary, builds a constrained prompt that may only use the numbers in that table, calls the OpenAI API from code, and logs the prompt, output, and any failure. If the API key is absent or the API fails, a deterministic fallback commentary is produced from the same metrics, so the workflow still completes. This makes the LLM a controlled reporting accelerator rather than a source of hidden assumptions.
 
 \subsection*{7. What This Prototype Proves}
-The implementation proves the complete loop requested in the case study: public data ingestion, defensible QA, DST-safe alignment, leakage-aware forecasting, time-series validation, baseline comparison, stress metrics, forecast bands, prompt-curve translation, and a programmatic AI component. More importantly, the pieces fit together for one reason: the information set is respected all the way through. The model only sees what it could know; validation only tests unseen future windows; trading signals only fire when the edge clears uncertainty.
+The implementation proves the complete loop requested in the case study: public data ingestion, defensible QA, DST-safe alignment, leakage-aware forecasting, time-series validation, baseline comparison, stress metrics, forecast bands, prompt-curve translation, and a programmatic AI component. The central discipline is chronological consistency. Historical prices are only used after they are known, future realised prices are never used as features, validation always predicts a later window from an earlier training window, and the curve view is allowed to become directional only after the forecast edge is compared with the model's own error band. This is what turns the pipeline from a good-looking backtest into a defensible fair-value workflow.
 
 \subsection*{8. Desired Production Improvements}
 The prototype deliberately prioritises information-set correctness and reproducibility. The first production improvement would be horizon-consistent fundamental forecasts. The longer-period hourly setup currently treats forecast load/wind/solar as if they are available for the whole requested future window. This is acceptable for a proof of concept, but a production system should use genuine multi-day, week-ahead, or month-ahead fundamental forecasts, or train separate models by forecast horizon.
