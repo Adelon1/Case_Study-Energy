@@ -1,2 +1,0 @@
-model;params;split;fold;train_begin;train_end;test_begin;test_end;n_test_rows;n_predicted_rows;prediction_coverage;mae;rmse;bias;top_decile_mae;bottom_decile_mae;scarcity_price_mae
-boosted_tree_model;"{""l2_regularization"": 0.0, ""learning_rate"": 0.05, ""loss"": ""absolute_error"", ""max_iter"": 200, ""max_leaf_nodes"": 31, ""min_samples_leaf"": 50}";window_prediction;1;2024-06-02 22:00:00+00:00;2026-06-02 22:00:00+00:00;2026-06-02 22:00:00+00:00;2026-06-03 22:00:00+00:00;24;24;1.0;6.75;8.18;-1.04;4.98;6.22;

@@ -1,7 +1,0 @@
-{
-  "alpha": 1.0,
-  "max_trials": 100,
-  "min_samples": 0.5,
-  "residual_threshold": null,
-  "target_transform": "raw"
-}

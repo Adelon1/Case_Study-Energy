@@ -1,2 +1,0 @@
-model;alpha;max_trials;min_samples;residual_threshold;target_transform;mae;rmse;bias;top_decile_mae;bottom_decile_mae;scarcity_price_mae;relative_mae_vs_baseline
-ransac_lasso_model;1.0;100;0.5;;raw;15.58;24.22;-0.96;29.55;18.16;38.39;0.58

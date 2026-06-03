@@ -1,2 +1,0 @@
-model;max_subpopulation;target_transform;mae;rmse;bias;top_decile_mae;bottom_decile_mae;scarcity_price_mae;relative_mae_vs_baseline
-theil_sen_model;5000;raw;29.85;39.57;17.42;52.5;22.57;55.46;0.48

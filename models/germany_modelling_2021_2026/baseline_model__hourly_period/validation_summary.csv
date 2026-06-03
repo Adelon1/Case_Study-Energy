@@ -1,2 +1,0 @@
-model;method;mae;rmse;bias;top_decile_mae;bottom_decile_mae;scarcity_price_mae
-baseline_model;historical_mean;61.86;74.83;42.33;61.39;122.47;68.17

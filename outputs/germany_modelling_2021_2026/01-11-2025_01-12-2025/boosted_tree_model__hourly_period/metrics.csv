@@ -1,2 +1,0 @@
-model;params;split;fold;train_begin;train_end;test_begin;test_end;n_test_rows;n_predicted_rows;prediction_coverage;mae;rmse;bias;top_decile_mae;bottom_decile_mae;scarcity_price_mae
-boosted_tree_model;"{""l2_regularization"": 0.0, ""learning_rate"": 0.05, ""loss"": ""absolute_error"", ""max_iter"": 200, ""max_leaf_nodes"": 31, ""min_samples_leaf"": 50}";window_prediction;1;2023-11-01 00:00:00+00:00;2025-11-01 00:00:00+00:00;2025-11-01 00:00:00+00:00;2025-12-01 00:00:00+00:00;720;720;1.0;15.77;24.4;1.73;43.72;18.62;51.95

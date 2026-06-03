@@ -1,4 +1,0 @@
-model;lag_rows;mae;rmse;bias;top_decile_mae;bottom_decile_mae;scarcity_price_mae
-baseline_model;24;26.64;39.53;0.03;45.2;38.38;58.35
-baseline_model;168;32.26;46.88;0.31;47.75;50.73;59.96
-baseline_model;48;34.0;48.78;0.0;53.57;54.03;68.18

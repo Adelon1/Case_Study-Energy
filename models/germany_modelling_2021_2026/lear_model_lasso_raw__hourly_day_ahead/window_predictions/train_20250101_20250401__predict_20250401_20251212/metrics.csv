@@ -1,2 +1,0 @@
-model;params;split;fold;train_begin;train_end;test_begin;test_end;n_test_rows;n_predicted_rows;prediction_coverage;mae;rmse;bias;top_decile_mae;bottom_decile_mae;scarcity_price_mae
-lear_model;"{""alpha"": 0.03, ""regularization"": ""lasso"", ""target_transform"": ""raw""}";window_prediction;1;2025-01-01 00:00:00+00:00;2025-04-01 00:00:00+00:00;2025-04-01 00:00:00+00:00;2025-12-12 00:00:00+00:00;6120;6120;1.0;161.54;365.56;100.33;324.33;111.14;332.0
