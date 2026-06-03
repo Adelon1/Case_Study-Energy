@@ -426,10 +426,9 @@ def save_final_model_artifacts(
     return model_path, predictions_path, metadata_path
 
 
-def main() -> None:
-    """Run rolling validation and write compact result artifacts."""
+def run_validation_step(args: SimpleNamespace) -> None:
+    """Run rolling validation and write compact result artifacts for prepared args."""
 
-    args = apply_interactive_settings(parse_command_line_arguments())
     feature_path = Path(args.features)
     output_base_folder = (
         Path(args.output_folder) if args.output_folder else default_models_base_folder(feature_path)
@@ -557,6 +556,12 @@ def main() -> None:
     print(f"  out-of-sample predictions: {predictions_path}")
     print(f"  saved model: {model_path}")
     print(f"  metadata: {metadata_path}")
+
+
+def main() -> None:
+    """Run the interactive validation workflow."""
+
+    run_validation_step(apply_interactive_settings(parse_command_line_arguments()))
 
 
 if __name__ == "__main__":

@@ -54,6 +54,22 @@ Environment variables (loaded from `.env`, never committed):
 
 All runnable scripts are interactive by default; run them without command-line options and answer the prompts.
 
+### One-Command Reproduction
+
+To regenerate the case-study artifacts from a clean checkout, fill `.env` first and run:
+
+```bash
+make reproduce
+```
+
+Equivalent explicit command:
+
+```bash
+.venv/bin/python -m pipeline --config configs/case_study.yaml --noninteractive
+```
+
+This downloads ENTSO-E data, rebuilds the feature table and QA report, validates the selected model runs, and writes the forecast-view outputs. It can take a long time because it performs public API downloads and rolling validation.
+
 ### Recommended Workflow
 
 | Step | Command | Use |
@@ -86,6 +102,8 @@ All runnable scripts are interactive by default; run them without command-line o
 | `pipeline_steps/01_build_dataset.py` | Main data-building entry point. |
 | `pipeline_steps/02_validate_model.py` | Main model-validation entry point. |
 | `pipeline_steps/03_run_forecast_view.py` | Main Task-3 forecast-to-curve workflow. |
+| `pipeline.py` | Noninteractive reproduction orchestrator. |
+| `configs/case_study.yaml` | Reproduction config used by `make reproduce`. |
 | `pipeline_helpers/02_modelling/feature_sets.json` | User-editable mapping from model/setup to feature bundles. |
 | `.env` | User-editable secrets and API model settings. |
 | `REPORT.md` | Long-form explanation of methodology, implementation details, and results. |
@@ -95,6 +113,7 @@ All runnable scripts are interactive by default; run them without command-line o
 | File / Prompt | What to change |
 | --- | --- |
 | `.env` | Add `ENTSOE_API_KEY`, optional `OPENAI_API_KEY`, and optional `OPENAI_MODEL`. |
+| `configs/case_study.yaml` | Change the noninteractive reproduction run list. |
 | `01_build_dataset.py` prompts | Change data mode, datasets, and start/end dates. |
 | `02_validate_model.py` prompts | Change model, forecast setup, regularization, and period length. |
 | `03_run_forecast_view.py` prompts | Change delivery day/window, training months, benchmark, and AI commentary. |
@@ -129,6 +148,9 @@ pipeline_steps/                  # runnable entry points, numbered in run order
   01_build_dataset.py            # download → parse → combine → QA → features
   02_validate_model.py           # rolling validation, metrics, bands, artifacts
   03_run_forecast_view.py        # train/predict window → curve view → plots → optional AI
+pipeline.py                      # noninteractive config-driven reproduction runner
+configs/case_study.yaml          # default full reproduction config
+Makefile                         # make reproduce shortcut
 
 pipeline_helpers/
   01_entsoe_data/                   # ingestion, parsing, QA, feature engineering
@@ -166,6 +188,7 @@ Selected validation results on `germany_modelling_2021_2026`:
 | `boosted_tree_model__hourly_day_ahead` | 15.28 | 23.94 | +2.17 | 79.9% |
 | `ransac_lasso_model_raw__hourly_day_ahead` | 15.58 | 24.22 | -0.96 | 79.9% |
 | `lear_model_elasticnet_raw__hourly_day_ahead` | 16.23 | 26.35 | +1.75 | 79.9% |
+| `lear_model_lasso_raw__hourly_day_ahead` | 16.50 | 26.69 | +0.96 | 79.9% |
 | `boosted_tree_model__hourly_period` | 28.30 | 40.14 | +16.06 | 79.9% |
 | `theil_sen_model_raw__hourly_period` | 29.85 | 39.57 | +17.42 | 79.9% |
 | `baseline_model__hourly_period` | 61.86 | 74.83 | +42.33 | 79.9% |

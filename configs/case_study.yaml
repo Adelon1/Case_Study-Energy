@@ -1,0 +1,91 @@
+# Full noninteractive reproduction config.
+#
+# This intentionally runs the same public workflow as the interactive scripts:
+# build ENTSO-E data -> validate selected models -> create Task-3 forecast views.
+# It can take a long time because it downloads public data and trains several
+# rolling-validation models.
+
+feature_csv: data/03_processed/germany_modelling_2021_2026/germany_model_features.csv
+
+build:
+  enabled: true
+  datasets: all
+  start: "01-01-2021"
+  end: "01-01-2026"
+  mode: modelling
+  env: .env
+
+validations:
+  - model: baseline_model
+    forecast_setup: hourly_day_ahead
+    period_days: 1
+    target_transform: raw
+
+  - model: baseline_model
+    forecast_setup: hourly_period
+    period_days: 1
+    target_transform: raw
+
+  - model: baseline_model
+    forecast_setup: period_average
+    period_days: 15
+    block: all
+    target_transform: raw
+
+  - model: boosted_tree_model
+    forecast_setup: hourly_day_ahead
+    period_days: 1
+    target_transform: raw
+
+  - model: boosted_tree_model
+    forecast_setup: hourly_period
+    period_days: 1
+    target_transform: raw
+
+  - model: lear_model
+    forecast_setup: hourly_day_ahead
+    period_days: 1
+    regularization: lasso
+    target_transform: raw
+
+  - model: lear_model
+    forecast_setup: hourly_day_ahead
+    period_days: 1
+    regularization: elasticnet
+    target_transform: raw
+
+  - model: lear_model
+    forecast_setup: period_average
+    period_days: 15
+    block: all
+    regularization: lasso
+    target_transform: raw
+
+  - model: ransac_lasso_model
+    forecast_setup: hourly_day_ahead
+    period_days: 1
+    target_transform: raw
+
+  - model: theil_sen_model
+    forecast_setup: hourly_period
+    period_days: 1
+    target_transform: raw
+
+forecast_views:
+  - model: lear_model
+    forecast_setup: hourly_day_ahead
+    delivery_date: "01-12-2025"
+    training_months: 24
+    regularization: lasso
+    target_transform: raw
+    benchmark: trailing_average
+    ai_commentary: false
+
+  - model: boosted_tree_model
+    forecast_setup: hourly_period
+    test_begin: "01-11-2025"
+    test_end: "01-12-2025"
+    training_months: 24
+    target_transform: raw
+    benchmark: trailing_average
+    ai_commentary: false

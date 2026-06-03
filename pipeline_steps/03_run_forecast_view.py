@@ -423,10 +423,9 @@ def add_proxy_bands_when_missing(predictions: pd.DataFrame, metrics_path: Path) 
     return result
 
 
-def main() -> None:
+def run_forecast_view(args: SimpleNamespace) -> None:
     """Run prediction, curve translation, plots, metadata, and optional AI commentary."""
 
-    args = apply_interactive_settings(parse_command_line_arguments())
     missing_dates = [
         name
         for name in ["test_begin", "test_end"]
@@ -572,6 +571,12 @@ def main() -> None:
     print(f"  curve summary: {curve_summary_path}")
     print(f"  curve report: {curve_report_path}")
     print(f"  plots: {plots_folder}")
+
+
+def main() -> None:
+    """Run the interactive forecast-view workflow."""
+
+    run_forecast_view(apply_interactive_settings(parse_command_line_arguments()))
 
 
 if __name__ == "__main__":

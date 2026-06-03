@@ -443,11 +443,10 @@ The pipeline does not join on local clock time. ENTSO-E XML timestamps are UTC, 
     return report_path
 
 
-def main() -> None:
-    """Run the full XML -> stage-2 CSV -> stage-3 CSV workflow."""
+def run_dataset_build(args: SimpleNamespace) -> None:
+    """Run the full XML -> stage-2 CSV -> stage-3 CSV workflow for prepared args."""
 
     started_at = time.perf_counter()
-    args = apply_interactive_settings(parse_command_line_arguments())
     validate_required_arguments(args)
     date_window = parse_local_date_window(args.start, args.end)
     date_chunks = split_local_date_window_into_months(args.start, args.end)
@@ -517,6 +516,12 @@ def main() -> None:
     print(f"  features : {feature_dataset.path}")
     print(f"  QA report: {report_path}")
     print(f"\nDone in {format_elapsed_time(time.perf_counter() - started_at)}")
+
+
+def main() -> None:
+    """Run the interactive dataset-building workflow."""
+
+    run_dataset_build(apply_interactive_settings(parse_command_line_arguments()))
 
 
 if __name__ == "__main__":
