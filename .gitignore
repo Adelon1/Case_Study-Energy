@@ -23,6 +23,10 @@ data/03_processed/*
 !data/02_interim/.gitkeep
 !data/03_processed/.gitkeep
 
+# Reproducible model/output artifacts
+models/
+outputs/
+
 # LaTeX build byproducts
 *.aux
 *.fdb_latexmk
